@@ -6,6 +6,9 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  contents: write
+
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -63,3 +66,23 @@ jobs:
       # Compila para o simulador (sem assinatura) — confirma que o projeto iOS está saudável.
       # Para enviar à App Store/TestFlight use o Xcode (Product → Archive) ou fastlane com seu certificado.
       - run: xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -20
+
+  release:
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out }
+      - name: Renomear
+        run: |
+          mkdir pub
+          for f in $(find out -name '*.apk' -o -name '*.aab'); do
+            flavor=$(echo "$f" | sed -E 's#out/android-([a-z]+)/.*#\1#')
+            cp "$f" "pub/frente-de-ferro-$flavor-$(basename "$f")"
+          done
+          ls -la pub
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Apps build ${{ github.run_number }}
+          files: pub/*
