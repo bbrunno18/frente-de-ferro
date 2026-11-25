@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 500"><defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#16345a"/><stop offset="1" stop-color="#070d18"/></linearGradient>
+<linearGradient id="gd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd35c"/><stop offset="1" stop-color="#d28a12"/></linearGradient></defs>
+<rect width="1024" height="500" fill="url(#bg)"/>
+<g opacity=".25" stroke="#4aa8e8" stroke-width="2"><path d="M0 420 L1024 300 M0 460 L1024 360 M0 380 L1024 240"/></g>
+<g transform="translate(70 70) scale(.72)"><path d="M256 52 L444 128 V272 C444 366 366 430 256 468 C146 430 68 366 68 272 V128Z" fill="url(#gd)" stroke="#6b4608" stroke-width="12"/><path d="M256 84 L414 146 V268 C414 346 348 402 256 436 C164 402 98 346 98 268 V146Z" fill="#0d1a2c"/><path d="M176 168 H352 V214 H228 V246 H326 V288 H228 V372 H176Z" fill="url(#gd)"/><path d="M300 318 L330 284 L360 318 L330 372Z" fill="#59c9ff"/></g>
+<text x="470" y="215" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="52" fill="#b9c8db" letter-spacing="10">FRENTE DE</text>
+<text x="462" y="320" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="120" fill="url(#gd)" stroke="#6b4608" stroke-width="3">FERRO</text>
+<text x="470" y="375" font-family="Arial,sans-serif" font-size="26" fill="#8fb4d9" letter-spacing="4">ESTRATÉGIA EM TEMPO REAL 3D</text>
+</svg>

@@ -1,0 +1,3 @@
+{$PEER_DOMAIN} {
+  reverse_proxy peer:9000
+}

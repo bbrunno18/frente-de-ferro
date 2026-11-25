@@ -1,0 +1,22 @@
+# Servidor online do Frente de Ferro: sinalização PeerJS + TURN (coturn) para jogadores atrás de NAT/4G.
+# Requisitos: VPS pequena (1 vCPU / 1 GB serve para centenas de partidas 1x1), domínio apontando para o IP.
+# Uso:  cp .env.example .env  (edite)  &&  docker compose up -d
+services:
+  peer:
+    image: peerjs/peerjs-server:latest
+    restart: always
+    command: ["--port", "9000", "--path", "/", "--allow_discovery", "false"]
+    ports: ["9000:9000"]   # coloque um proxy HTTPS (Caddy/Nginx) na frente: wss://SEU_DOMINIO
+  turn:
+    image: coturn/coturn:latest
+    restart: always
+    network_mode: host
+    command: >
+      -n --realm=${TURN_REALM} --listening-port=3478 --fingerprint --lt-cred-mech
+      --user=${TURN_USER}:${TURN_PASS} --min-port=49160 --max-port=49200 --no-cli --no-tlsv1 --no-tlsv1_1
+  caddy:
+    image: caddy:2
+    restart: always
+    ports: ["80:80", "443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile", "caddy_data:/data"]
+volumes: { caddy_data: {} }

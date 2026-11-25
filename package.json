@@ -1,0 +1,48 @@
+{
+  "name": "frente-de-ferro-rts",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Frente de Ferro — RTS mobile (Vanguarda Solar vs Sindicato Ferro)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --host",
+    "sim": "tsx tools/sim.ts",
+    "build:mobile": "vite build && npx cap sync",
+    "open:android": "npx cap open android",
+    "open:ios": "npx cap open ios",
+    "app:full": "node scripts/app.mjs full",
+    "app:demo": "node scripts/app.mjs demo",
+    "android:full": "node scripts/app.mjs full android && npx cap open android",
+    "android:demo": "node scripts/app.mjs demo android && npx cap open android",
+    "ios:full": "node scripts/app.mjs full ios && npx cap open ios",
+    "ios:demo": "node scripts/app.mjs demo ios && npx cap open ios",
+    "test:missions": "tsx tools/missions-test.ts",
+    "test:balance": "tsx tools/balance.ts"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/cli": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/haptics": "^7.0.5",
+    "@capacitor/ios": "^7.0.0",
+    "@capacitor/preferences": "^7.0.0",
+    "@capacitor/screen-orientation": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0",
+    "cordova-plugin-purchase": "^13.20.0",
+    "peerjs": "^1.5.5",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@types/three": "^0.187.0",
+    "peer": "^1.0.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.3.4"
+  }
+}

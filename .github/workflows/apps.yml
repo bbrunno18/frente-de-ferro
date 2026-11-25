@@ -1,0 +1,65 @@
+name: Apps (Android + iOS)
+# Gera os apps do jogo completo e da demo. Rode em Actions → "Apps" → Run workflow,
+# ou automaticamente ao criar uma tag v1.2.3.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    env: { KS: '${{ secrets.ANDROID_KEYSTORE_BASE64 }}' }
+    strategy: { matrix: { flavor: [full, demo] } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: node scripts/app.mjs ${{ matrix.flavor }} android
+        env: { BUILD_NUMBER: '${{ github.run_number }}' }
+      # Assinatura (opcional): crie os segredos ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+      - name: Keystore
+        if: ${{ env.KS != '' }}
+        run: echo "$KS" | base64 -d > android/app/release.keystore
+      - name: Build
+        working-directory: android
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          if [ -f app/release.keystore ]; then
+            ./gradlew bundleRelease assembleRelease \
+              -Pandroid.injected.signing.store.file=$PWD/app/release.keystore \
+              -Pandroid.injected.signing.store.password="$KS_PASS" \
+              -Pandroid.injected.signing.key.alias="$KS_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASS"
+          else
+            ./gradlew assembleDebug
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.flavor }}
+          path: |
+            android/app/build/outputs/bundle/**/*.aab
+            android/app/build/outputs/apk/**/*.apk
+
+  ios:
+    runs-on: macos-latest
+    strategy: { matrix: { flavor: [full, demo] } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: node scripts/app.mjs ${{ matrix.flavor }} ios
+        env: { BUILD_NUMBER: '${{ github.run_number }}' }
+      - run: cd ios/App && pod install
+      # Compila para o simulador (sem assinatura) — confirma que o projeto iOS está saudável.
+      # Para enviar à App Store/TestFlight use o Xcode (Product → Archive) ou fastlane com seu certificado.
+      - run: xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -20
