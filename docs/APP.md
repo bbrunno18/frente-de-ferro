@@ -80,6 +80,9 @@ O arquivo `.github/workflows/apps.yml` compila tudo no GitHub:
 Para o Android sair já assinado para a loja, crie em *Settings → Secrets → Actions*:
 `ANDROID_KEYSTORE_BASE64` (o arquivo da chave em base64), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
 
+### Criar a chave de assinatura (uma vez)
+No seu computador, com Java instalado: `bash scripts/gerar-chave.sh`. Ele cria a chave em `~/frente-de-ferro-chave/` e mostra os 4 segredos para cadastrar no GitHub. **Guarde a chave e a senha em mais de um lugar.**
+
 ## 6. Trocar ícone e tela de abertura
 
 As imagens ficam em `assets-app/full/` e `assets-app/demo/`:
