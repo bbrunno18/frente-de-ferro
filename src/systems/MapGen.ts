@@ -1,4 +1,4 @@
-import { MAP_W, MAP_H } from '../config';
+import { MAP_W, MAP_H, setMapSize } from '../config';
 
 export interface MapData {
   terrain: Uint8Array;       // 0 livre, 1 rocha, 2 água
@@ -6,10 +6,18 @@ export interface MapData {
   crystalMax: Uint16Array;   // >0 => tile de campo de cristal (regenera)
 }
 
-export const BASE_CENTER: [number, number][] = [[11, 52], [52, 11]];
-const FIELDS: [number, number, number][] = [
-  [17, 53, 3.2], [46, 10, 3.2], [32, 32, 3.6], [13, 27, 3], [50, 36, 3],
-];
+/** Centros de base por tamanho de mapa. Índice = time: 0 inferior-esquerdo, 1 superior-direito, 2 superior-esquerdo, 3 inferior-direito. */
+export const BASE_CENTERS: Record<number, [number, number][]> = {
+  64: [[11, 52], [52, 11]],
+  96: [[12, 83], [83, 12], [12, 12], [83, 83]],
+};
+export const BASE_CENTER = BASE_CENTERS[64];
+/** [x, y, raio] — 64×64: 5 campos (2 nas bases). 96×96: 8 campos (4 nas bases + 4 disputados em anel no centro). */
+const FIELDS_BY_SIZE: Record<number, [number, number, number][]> = {
+  64: [[17, 53, 3.2], [46, 10, 3.2], [32, 32, 3.6], [13, 27, 3], [50, 36, 3]],
+  96: [[18, 84, 3.2], [77, 11, 3.2], [18, 11, 3.2], [77, 84, 3.2], [34, 48, 3.2], [62, 48, 3.2], [48, 34, 3.2], [48, 62, 3.2]],
+};
+export const fieldsFor = (size: number) => FIELDS_BY_SIZE[size] ?? FIELDS_BY_SIZE[64];
 
 function mulberry32(a: number) {
   return () => {
@@ -37,7 +45,11 @@ function connected(terrain: Uint8Array, from: [number, number], targets: [number
   return targets.every(([x, y]) => seen[y * MAP_W + x]);
 }
 
-export function generateMap(seed: number, rocks: number, water = 0.4): MapData {
+/** `active` = times que terão base (para garantir conectividade entre todas). Padrão 64×64 com 2 bases = comportamento original. */
+export function generateMap(seed: number, rocks: number, water = 0.4, size = 64, active: number[] = [0, 1]): MapData {
+  setMapSize(size);
+  const BASE_CENTER = BASE_CENTERS[size] ?? BASE_CENTERS[64], FIELDS = fieldsFor(size);
+  const bases = active.map(t => BASE_CENTER[t]).filter(Boolean);
   for (let attempt = 0; attempt < 40; attempt++) {
     const rng = mulberry32(seed * 977 + attempt * 31);
     const terrain = new Uint8Array(MAP_W * MAP_H);
@@ -71,8 +83,8 @@ export function generateMap(seed: number, rocks: number, water = 0.4): MapData {
         }
       }
     }
-    const targets: [number, number][] = [BASE_CENTER[1], ...FIELDS.map(([x, y]) => [Math.round(x), Math.round(y)] as [number, number])];
-    if (connected(terrain, BASE_CENTER[0], targets)) return { terrain, crystal, crystalMax };
+    const targets: [number, number][] = [...bases.slice(1), ...FIELDS.map(([x, y]) => [Math.round(x), Math.round(y)] as [number, number])];
+    if (connected(terrain, bases[0] ?? BASE_CENTER[0], targets)) return { terrain, crystal, crystalMax };
   }
   // fallback: mapa limpo
   const terrain = new Uint8Array(MAP_W * MAP_H);

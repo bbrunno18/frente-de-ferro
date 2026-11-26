@@ -57,7 +57,6 @@ export function nearestFree(gx: number, gy: number, blocked: BlockedFn, maxR: nu
   return null;
 }
 
-const N = MAP_W * MAP_H;
 const DIRS: [number, number, number][] = [
   [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
   [1, 1, 1.4142], [1, -1, 1.4142], [-1, 1, 1.4142], [-1, -1, 1.4142],
@@ -72,6 +71,7 @@ export function findPath(sx: number, sy: number, gx: number, gy: number, blocked
     gx = g.x; gy = g.y;
     if (sx === gx && sy === gy) return [];
   }
+  const N = MAP_W * MAP_H; // o mapa pode ser 64×64 ou 96×96 (MAP_W/MAP_H são live bindings)
   const g = new Float32Array(N).fill(Infinity);
   const parent = new Int32Array(N).fill(-1);
   const closed = new Uint8Array(N);

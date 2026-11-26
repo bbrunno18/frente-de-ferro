@@ -1,10 +1,9 @@
 import {
   DEFS, KINDS, CATEGORIES, Kind, Category, Team, Faction, Difficulty, DIFFS, FACTIONS, MAPS, TILE, MAP_W, MAP_H,
-  HARVEST_CAP, HARVEST_RATE, UNLOAD_RATE, PROJ_SPEED, ProjectileKind, Armor, MAX_TECH, VET_NAMES,
-} from '../config';
+  HARVEST_CAP, HARVEST_RATE, UNLOAD_RATE, PROJ_SPEED, ProjectileKind, Armor, MAX_TECH, VET_NAMES, TEAMS, MAX_TEAMS, WORLD_W, setMapSize, defaultSlots, Slot, MapSize } from '../config';
 import { Entity } from '../entities/Entity';
 import { findPath, Pt } from './Pathfinding';
-import { generateMap, MapData } from './MapGen';
+import { BASE_CENTERS, generateMap, MapData } from './MapGen';
 import { AI } from './AI';
 
 export interface QueueItem { kind: Kind; progress: number; notified?: boolean }
@@ -21,6 +20,7 @@ export interface TeamState {
   built: number;
   sp: number;      // recarga do superpoder (s)
   rally: Pt | null;
+  /** eliminado (perdeu todas as construções) */ out?: boolean;
 }
 /** Superpoder: recarga em segundos; exige Central de Radar. */
 export const SP_CD = 150;
@@ -57,7 +57,7 @@ export type Cmd =
 export interface Snapshot {
   tm: number;
   w: Team | null;
-  t: { c: number; p: number; u: number; l: boolean; k: number; sp?: number; q: Record<Category, [Kind, number][]> }[];
+  t: { c: number; p: number; u: number; l: boolean; k: number; sp?: number; o?: boolean; q: Record<Category, [Kind, number][]> }[];
   e: number[][];
   p: number[][];
   fx: Fx[];
@@ -71,6 +71,8 @@ export interface WorldOpts {
   faction: Faction;
   enemyFaction?: Faction;
   vsAI?: boolean;
+  slots?: Slot[];          // 4 slots; ausente = 2 jogadores (jogador + IA/amigo)
+  mapSize?: MapSize;
   bare?: boolean;          // missões: não cria as bases padrão
   customWin?: boolean;     // missões: a vitória/derrota é decidida pelo script
   startCredits?: number;
@@ -82,7 +84,6 @@ export interface WorldOpts {
   noFog?: boolean;
 }
 
-const N = MAP_W * MAP_H;
 const clampTile = (v: number, max: number) => Math.max(0, Math.min(max - 1, Math.floor(v)));
 const angDiff = (a: number, b: number) => {
   let d = b - a;
@@ -96,21 +97,26 @@ export class World {
   terrain: Uint8Array;
   crystal: Float32Array;
   crystalMax: Uint16Array;
-  occ = new Uint8Array(N);
+  /** tamanho do mapa em tiles (64 ou 96) e nº de tiles */
+  mapSize = 64; N = 64 * 64;
+  slots: Slot[] = [];
+  /** times que participam (têm slot ativo) */
+  active: Team[] = [0, 1];
+  occ!: Uint8Array;
   entities: Entity[] = [];
   projectiles: Projectile[] = [];
   teams: TeamState[];
   /** Nível de evolução por tipo: melhorar um equipamento melhora todos do mesmo tipo (e os futuros). */
-  kindTech: Partial<Record<Kind, number>>[] = [{}, {}];
+  kindTech: Partial<Record<Kind, number>>[] = [{}, {}, {}, {}];
   time = 0;
   fx: Fx[] = [];
   messages: TeamMsg[] = [];
   sounds: TeamSound[] = [];
-  explored = new Uint8Array(N);
-  visible = new Uint8Array(N);
+  explored!: Uint8Array;
+  visible!: Uint8Array;
   winner: Team | null = null;
   customWin = false;
-  harvested = [0, 0];
+  harvested = [0, 0, 0, 0];
   ais: AI[] = [];
   crystalRev = 0;
   difficulty: Difficulty;
@@ -119,9 +125,9 @@ export class World {
   private fogT = 0;
   private regenT = 0;
   private checkT = 0;
-  lastAlert: ({ x: number; y: number } | null)[] = [null, null];
-  private lastWarn = [-99, -99];
-  private lastLow = [false, false];
+  lastAlert: ({ x: number; y: number } | null)[] = [null, null, null, null];
+  private lastWarn = [-99, -99, -99, -99];
+  private lastLow = [false, false, false, false];
 
   constructor(opts: WorldOpts) {
     Entity.next = 1;
@@ -129,26 +135,51 @@ export class World {
     this.viewTeam = opts.viewTeam ?? 0;
     this.mirror = !!opts.mirror;
     const map = MAPS.find(m => m.id === opts.mapId) ?? MAPS[0];
-    const md: MapData = generateMap(opts.seed ?? map.seed, map.rocks, map.water ?? 0.4);
-    this.customWin = !!opts.customWin; this.noFog = !!opts.noFog; this.noSuper = !!opts.noSuper;
-    this.terrain = md.terrain; this.crystal = md.crystal; this.crystalMax = md.crystalMax;
     const enemy: Faction = opts.enemyFaction ?? (opts.faction === 'solar' ? 'ferro' : 'solar');
     const vsAI = opts.vsAI !== false;
-    const d = DIFFS[opts.difficulty];
+    // slots: sem lista explícita = partida clássica de 2 jogadores (campanha, 1v1, online 1v1)
+    const slots = opts.slots ?? defaultSlots(opts.faction, enemy, opts.difficulty);
+    this.slots = slots.map(sl => ({ ...sl }));
+    this.active = TEAMS.filter(t => this.slots[t].active && this.slots[t].type !== 'empty');
+    if (this.active.length < 2 && !opts.bare) this.active = [0, 1];
+    // 3+ jogadores => mapa grande obrigatório; senão respeita a escolha
+    this.mapSize = this.active.length >= 3 ? 96 : (opts.mapSize ?? 64);
+    setMapSize(this.mapSize);
+    this.N = this.mapSize * this.mapSize;
+    this.occ = new Uint8Array(this.N); this.explored = new Uint8Array(this.N); this.visible = new Uint8Array(this.N);
+    const rocks = Math.round(map.rocks * (this.mapSize / 64) ** 2);
+    const md: MapData = generateMap(opts.seed ?? map.seed, rocks, map.water ?? 0.4, this.mapSize, this.active);
+    this.customWin = !!opts.customWin; this.noFog = !!opts.noFog; this.noSuper = !!opts.noSuper;
+    this.terrain = md.terrain; this.crystal = md.crystal; this.crystalMax = md.crystalMax;
     const mk = (f: Faction, speedMul: number, incomeMul: number, cr: number): TeamState => ({
       faction: f, credits: cr, power: 0, usage: 0, low: false, speedMul, incomeMul,
       queues: { structure: [], infantry: [], vehicle: [], air: [] }, kills: 0, built: 0, sp: SP_START, rally: null,
     });
-    this.teams = [mk(opts.faction, 1, FACTIONS[opts.faction].inc, opts.startCredits ?? 2000), mk(enemy, vsAI ? d.speed : 1, (vsAI ? d.income : 1) * FACTIONS[enemy].inc, opts.enemyCredits ?? 2000)];
+    // IA ganha o multiplicador da própria dificuldade (por slot); humanos jogam sem bônus
+    this.teams = TEAMS.map(t => {
+      const sl = this.slots[t];
+      const ai = t !== 0 && (opts.bare ? false : sl.type === 'ai') && vsAI;
+      const d = DIFFS[sl.difficulty ?? opts.difficulty];
+      const cr = t === 0 ? (opts.startCredits ?? 2000) : (opts.enemyCredits ?? (opts.slots ? opts.startCredits : undefined) ?? 2000);
+      return mk(sl.faction, ai ? d.speed : 1, (ai ? d.income : 1) * FACTIONS[sl.faction].inc, cr);
+    });
+    for (const t of TEAMS) if (!this.active.includes(t)) this.teams[t].out = true;
     if (!this.mirror && !opts.bare) {
-      this.defaultLayout(0); this.defaultLayout(1);
-      if (vsAI) this.ais.push(new AI(this, 1));
+      for (const t of this.active) this.defaultLayout(t);
+      if (vsAI) for (const t of this.active) if (t !== 0 && this.slots[t].type === 'ai') this.ais.push(new AI(this, t));
     }
     this.updatePower();
     this.updateFog();
   }
 
   // ---------- helpers ----------
+  /** Aliança do time (times sem slot ficam sozinhos). */
+  allianceOf(t: Team): number { return this.slots[t]?.alliance ?? t; }
+  /** Inimigos = alianças diferentes. Um time nunca é inimigo de si mesmo. */
+  isEnemy(a: Team, b: Team): boolean { return a !== b && this.allianceOf(a) !== this.allianceOf(b); }
+  isAlly(a: Team, b: Team): boolean { return a === b || this.allianceOf(a) === this.allianceOf(b); }
+  /** Times ainda na partida (ativos e não eliminados). */
+  alive(): Team[] { return this.active.filter(t => !this.teams[t].out); }
   idx(tx: number, ty: number) { return ty * MAP_W + tx; }
   blocked = (tx: number, ty: number): boolean => {
     if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return true;
@@ -183,12 +214,17 @@ export class World {
   }
 
   /** Base inicial padrão (centro, gerador, refinaria, colheitadeira e 2 fuzileiros). */
+  /** Canto de cada time: 0 inferior-esquerdo, 1 superior-direito, 2 superior-esquerdo, 3 inferior-direito. */
+  corner(team: Team): { fx: boolean; fy: boolean } { return { fx: team === 1 || team === 3, fy: team === 1 || team === 2 }; }
+
   defaultLayout(team: Team) {
+    // layout escrito para o canto inferior-esquerdo do mapa 64; é deslocado para o tamanho atual e espelhado conforme o canto
     const layout: [Kind, number, number][] = [['conyard', 7, 50], ['power', 11, 50], ['refinery', 7, 54]];
-    for (const [k, tx, ty] of layout) {
-      const def = DEFS[k];
-      const x = team === 0 ? tx : MAP_W - tx - def.w;
-      const y = team === 0 ? ty : MAP_H - ty - def.h;
+    const { fx, fy } = this.corner(team), S = this.mapSize;
+    for (const [k, tx, ty0] of layout) {
+      const def = DEFS[k], ty = ty0 + S - 64;
+      const x = fx ? S - tx - def.w : tx;
+      const y = fy ? S - ty - def.h : ty;
       const b = this.addBuilding(team, k, x, y);
       if (k === 'refinery') this.spawnNear(team, 'harvester', b);
     }
@@ -340,7 +376,7 @@ export class World {
   }
 
   updatePower() {
-    for (const team of [0, 1] as Team[]) {
+    for (const team of this.active) {
       const t = this.teams[team];
       const mul = FACTIONS[t.faction].powerMul;
       let p = 0, u = 0;
@@ -362,7 +398,7 @@ export class World {
   }
 
   private production(dt: number) {
-    for (const team of [0, 1] as Team[]) {
+    for (const team of this.active) {
       const t = this.teams[team];
       for (const cat of CATEGORIES) {
         const head = t.queues[cat][0];
@@ -521,7 +557,7 @@ export class World {
       case 'move': this.orderMove(this.byIds(team, c.ids).filter(e => !e.building), c.x, c.y); return;
       case 'amove': this.orderAMove(this.byIds(team, c.ids).filter(e => !e.building), c.x, c.y); return;
       case 'atk': {
-        const t = this.entities.find(e => e.id === c.t && e.alive && e.team !== team);
+        const t = this.entities.find(e => e.id === c.t && e.alive && this.isEnemy(team, e.team));
         const us = this.byIds(team, c.ids).filter(e => !e.building);
         if (t) {
           this.orderAttack(us, t);
@@ -534,7 +570,7 @@ export class World {
       case 'patrol': for (const u of this.byIds(team, c.ids).filter(e => !e.building && e.def.damage > 0)) { u.order = { t: 'patrol', x: c.x, y: c.y, ox: u.x, oy: u.y }; u.needPath = true; u.auto = null; u.path = []; } return;
       case 'hold': for (const u of this.byIds(team, c.ids).filter(e => !e.building && e.def.damage > 0)) { u.order = { t: 'hold' }; u.path = []; u.auto = null; u.needPath = false; } return;
       case 'capture': {
-        const t = this.entities.find(e => e.id === c.t && e.alive && e.team !== team && e.building && e.kind !== 'wall');
+        const t = this.entities.find(e => e.id === c.t && e.alive && this.isEnemy(team, e.team) && e.building && e.kind !== 'wall');
         if (!t) return 'Só é possível capturar construções inimigas';
         for (const u of this.byIds(team, c.ids).filter(e => e.kind === 'engineer')) { u.order = { t: 'capture', target: t }; u.path = []; u.repath = 0; u.auto = null; }
         return;
@@ -576,7 +612,7 @@ export class World {
   private serviceOrder(e: Entity, dt: number) {
     const o = e.order; if (o.t !== 'capture' && o.t !== 'board') return;
     const tg = o.target;
-    if (!tg.alive || (o.t === 'capture' && tg.team === e.team)) { e.order = { t: 'idle' }; e.path = []; return; }
+    if (!tg.alive || (o.t === 'capture' && this.isAlly(tg.team, e.team))) { e.order = { t: 'idle' }; e.path = []; return; }
     const dd = Math.hypot(tg.x - e.x, tg.y - e.y), reach = e.radius + tg.radius + (e.path.length === 0 && e.repath > 0 ? 40 : 22);
     if (dd <= reach) {
       if (o.t === 'capture') {
@@ -642,7 +678,7 @@ export class World {
       this.strikes.splice(i, 1);
       this.fx.push({ t: 'boom', x: k.x, y: k.y, s: k.big ? 2.2 : 1.6 });
       for (const e of this.entities.slice()) {
-        if (!e.alive || e.team === k.team) continue;
+        if (!e.alive || !this.isEnemy(k.team, e.team)) continue;
         const d = Math.hypot(e.x - k.x, e.y - k.y);
         if (d < k.r + (e.building ? 20 : 0)) this.damage(e, k.dmg * (1 - 0.5 * d / (k.r + 20)) * (e.building ? 0.55 : 1), k.team, null);
       }
@@ -702,12 +738,33 @@ export class World {
     e.angle += Math.abs(diff) <= step ? diff : Math.sign(diff) * step;
   }
 
+  // ---------- grade espacial (spatial hash) ----------
+  private static GC = 96; // lado da célula (px)
+  private grid = new Map<number, Entity[]>();
+  private gridW = 1;
+  /** Reindexa todas as entidades vivas por célula. Chamado uma vez por tick. */
+  private rebuildGrid() {
+    const GC = World.GC; this.grid.clear(); this.gridW = Math.ceil(WORLD_W / GC) + 2;
+    for (const e of this.entities) {
+      if (!e.alive) continue;
+      const k = Math.max(0, (e.y / GC) | 0) * this.gridW + Math.max(0, (e.x / GC) | 0);
+      const l = this.grid.get(k); if (l) l.push(e); else this.grid.set(k, [e]);
+    }
+  }
+
+  /** Inimigo mais próximo dentro de `maxDist` px que `e` consegue atacar. Usa a grade; cai para varredura simples se o raio for grande demais. */
   nearestEnemy(e: Entity, maxDist: number): Entity | null {
     let best: Entity | null = null, bd = maxDist;
-    for (const o of this.entities) {
-      if (!o.alive || o.team === e.team || !this.canHit(e, o)) continue;
+    const consider = (o: Entity) => {
+      if (!o.alive || !this.isEnemy(e.team, o.team) || !this.canHit(e, o)) return;
       const d = this.distTo(e, o);
       if (d < bd) { bd = d; best = o; }
+    };
+    const GC = World.GC, r = maxDist + 90; // 90 = meia diagonal do maior prédio (o centro pode ficar longe da borda)
+    const cx0 = Math.max(0, ((e.x - r) / GC) | 0), cx1 = ((e.x + r) / GC) | 0, cy0 = Math.max(0, ((e.y - r) / GC) | 0), cy1 = ((e.y + r) / GC) | 0;
+    if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > this.entities.length / 2) { for (const o of this.entities) consider(o); return best; }
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) {
+      const l = this.grid.get(cy * this.gridW + cx); if (l) for (const o of l) consider(o);
     }
     return best;
   }
@@ -835,7 +892,7 @@ export class World {
     const claims = new Map<number, number>();
     for (const o of this.entities) if (o.kind === 'harvester' && o !== e && o.alive && o.hTile >= 0 && (o.hs === 'toCrystal' || o.hs === 'harvest')) claims.set(o.hTile, (claims.get(o.hTile) ?? 0) + 1);
     let best = -1, bd = Infinity;
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < this.N; i++) {
       if (this.crystal[i] < 15 || this.occ[i] !== 0) continue;
       if ((e.bad.get(i) ?? 0) > this.time) continue;
       const cx = (i % MAP_W + 0.5) * TILE, cy = ((i / MAP_W | 0) + 0.5) * TILE;
@@ -925,17 +982,28 @@ export class World {
 
   private separate() {
     const us = this.entities.filter(u => !u.building && u.alive && u.def.armor !== 'air');
+    // grade de 64 px: só compara unidades da mesma célula e vizinhas (antes: todas contra todas, O(n²))
+    const C = 64, gw = Math.ceil(WORLD_W / C) + 2, cells = new Map<number, number[]>();
     for (let i = 0; i < us.length; i++) {
-      for (let j = i + 1; j < us.length; j++) {
-        const a = us[i], b = us[j];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const min = (a.radius + b.radius) * 0.85;
-        const d2 = dx * dx + dy * dy;
-        if (d2 >= min * min || d2 < 0.0001) continue;
-        const d = Math.sqrt(d2), push = (min - d) * 0.25;
-        const nx = dx / d, ny = dy / d;
-        this.nudge(a, -nx * push, -ny * push);
-        this.nudge(b, nx * push, ny * push);
+      const k = Math.max(0, (us[i].y / C) | 0) * gw + Math.max(0, (us[i].x / C) | 0);
+      const l = cells.get(k); if (l) l.push(i); else cells.set(k, [i]);
+    }
+    for (let i = 0; i < us.length; i++) {
+      const a = us[i], ax = Math.max(0, (a.x / C) | 0), ay = Math.max(0, (a.y / C) | 0);
+      for (let cy = Math.max(0, ay - 1); cy <= ay + 1; cy++) for (let cx = Math.max(0, ax - 1); cx <= ax + 1; cx++) {
+        const l = cells.get(cy * gw + cx); if (!l) continue;
+        for (const j of l) {
+          if (j <= i) continue;
+          const b = us[j];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const min = (a.radius + b.radius) * 0.85;
+          const d2 = dx * dx + dy * dy;
+          if (d2 >= min * min || d2 < 0.0001) continue;
+          const d = Math.sqrt(d2), push = (min - d) * 0.25;
+          const nx = dx / d, ny = dy / d;
+          this.nudge(a, -nx * push, -ny * push);
+          this.nudge(b, nx * push, ny * push);
+        }
       }
     }
   }
@@ -959,7 +1027,7 @@ export class World {
         this.damage(t, p.raw * p.vs[t.def.armor], p.team, p.owner);
         if (p.splash > 0) {
           for (const o of this.entities.slice()) {
-            if (!o.alive || o === t || o.team === p.team) continue;
+            if (!o.alive || o === t || !this.isEnemy(p.team, o.team)) continue;
             if ((o.def.armor === 'air') !== (t.def.armor === 'air')) continue;
             const dd = this.distTo({ x: t.x, y: t.y } as Entity, o);
             if (dd < p.splash) this.damage(o, p.raw * p.vs[o.def.armor] * 0.6 * (1 - dd / p.splash), p.team, p.owner);
@@ -976,7 +1044,7 @@ export class World {
     if (this.noFog) { this.visible.fill(1); this.explored.fill(1); return; }
     this.visible.fill(0);
     for (const e of this.entities) {
-      if (e.team !== this.viewTeam || !e.alive) continue;
+      if (!e.alive || !this.isAlly(e.team, this.viewTeam)) continue;
       const r = e.sight;
       const cx = e.x / TILE, cy = e.y / TILE;
       const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(MAP_W - 1, Math.ceil(cx + r));
@@ -990,7 +1058,7 @@ export class World {
   }
 
   isVisible(e: Entity): boolean {
-    if (e.team === this.viewTeam) return true;
+    if (this.isAlly(e.team, this.viewTeam)) return true;
     const i = clampTile(e.y / TILE, MAP_H) * MAP_W + clampTile(e.x / TILE, MAP_W);
     return e.building ? this.explored[i] === 1 : this.visible[i] === 1;
   }
@@ -1004,7 +1072,7 @@ export class World {
     this.regenT += dt;
     if (this.regenT >= 0.5) {
       this.regenT = 0;
-      for (let i = 0; i < N; i++) {
+      for (let i = 0; i < this.N; i++) {
         const m = this.crystalMax[i];
         if (m > 0 && this.crystal[i] < m && this.occ[i] === 0) this.crystal[i] = Math.min(m, this.crystal[i] + 0.35);
       }
@@ -1012,6 +1080,7 @@ export class World {
     }
     for (const t of this.teams) if (t.sp > 0) t.sp = Math.max(0, t.sp - dt);
     this.updateStrikes(dt);
+    this.rebuildGrid();
     for (const ai of this.ais) ai.update(dt);
     for (const e of this.entities.slice()) {
       if (!e.alive) continue;
@@ -1026,9 +1095,33 @@ export class World {
     this.checkT += dt;
     if (this.checkT >= 1 && this.time > 3 && !this.customWin) {
       this.checkT = 0;
-      const b0 = this.buildings(0).length, b1 = this.buildings(1).length;
-      if (b1 === 0) this.winner = 0; else if (b0 === 0) this.winner = 1;
+      this.checkElimination();
     }
+  }
+
+  /** Desistência/queda de conexão: as construções do time explodem e ele é eliminado no próximo ciclo. */
+  surrender(team: Team) {
+    for (const b of this.buildings(team)) {
+      b.alive = false; this.fx.push({ t: 'boom', x: b.x, y: b.y, s: 1.6 });
+      for (let y = b.ty; y < b.ty + b.def.h; y++) for (let x = b.tx; x < b.tx + b.def.w; x++) this.occ[this.idx(x, y)] = 0;
+    }
+    this.updatePower();
+    this.checkT = 1; // força a checagem já no próximo update
+  }
+
+  /** Elimina quem perdeu todas as construções (unidades somem em explosões) e encerra quando resta uma só aliança. */
+  private checkElimination() {
+    for (const t of this.active) {
+      const ts = this.teams[t];
+      if (ts.out || this.buildings(t).length > 0) continue;
+      ts.out = true;
+      for (const u of this.units(t)) { u.alive = false; this.fx.push({ t: 'boom', x: u.x, y: u.y, s: 1.2 }); }
+      this.msg(`${FACTIONS[ts.faction].name} foi eliminado!`, t);
+      for (const o of this.active) if (o !== t) this.msg(`${FACTIONS[ts.faction].name} foi eliminado!`, o);
+    }
+    const left = this.alive();
+    const alliances = new Set(left.map(t => this.allianceOf(t)));
+    if (alliances.size <= 1) this.winner = left[0] ?? this.active[0];
   }
 
   // ---------- rede: snapshot (host) e espelho (guest) ----------
@@ -1040,7 +1133,7 @@ export class World {
     };
     return {
       tm: this.time, w: this.winner,
-      t: this.teams.map(t => ({ c: Math.floor(t.credits), p: t.power, u: t.usage, l: t.low, k: t.kills, sp: Math.round(t.sp), q: q(t) })),
+      t: this.teams.map(t => ({ c: Math.floor(t.credits), p: t.power, u: t.usage, l: t.low, k: t.kills, sp: Math.round(t.sp), o: t.out ? true : undefined, q: q(t) })),
       e: this.entities.filter(e => e.alive).map(e => [
         e.id, KINDS.indexOf(e.kind), e.team, Math.round(e.x), Math.round(e.y), Math.round(e.angle * 100) / 100,
         Math.round(e.hp), e.tech, e.vet, e.kills, e.tx, e.ty, Math.round(e.cargo)]),
@@ -1051,7 +1144,7 @@ export class World {
 
   crystalSnap(): number[] {
     const out: number[] = [];
-    for (let i = 0; i < N; i++) if (this.crystalMax[i] > 0) out.push(i, Math.round(this.crystal[i]));
+    for (let i = 0; i < this.N; i++) if (this.crystalMax[i] > 0) out.push(i, Math.round(this.crystal[i]));
     return out;
   }
   applyCrystal(a: number[]) {
@@ -1063,7 +1156,7 @@ export class World {
     this.time = s.tm; this.winner = s.w;
     s.t.forEach((ts, i) => {
       const t = this.teams[i];
-      t.credits = ts.c; t.power = ts.p; t.usage = ts.u; t.kills = ts.k; t.sp = ts.sp ?? 0;
+      t.out = !!ts.o; t.credits = ts.c; t.power = ts.p; t.usage = ts.u; t.kills = ts.k; t.sp = ts.sp ?? 0;
       if (ts.l && !t.low && i === this.viewTeam) this.sound('lowpower', this.viewTeam);
       t.low = ts.l;
       for (const c of CATEGORIES) t.queues[c] = ts.q[c].map(([kind, progress]) => ({ kind, progress }));

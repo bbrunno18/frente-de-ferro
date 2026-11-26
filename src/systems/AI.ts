@@ -18,8 +18,9 @@ export class AI {
   }
 
   update(dt: number) {
-    const d = DIFFS[this.w.difficulty];
+    const d = DIFFS[this.w.slots[this.team]?.difficulty ?? this.w.difficulty];
     this.t += dt;
+    if (this.w.teams[this.team].out) return;
     if (this.t < d.think) return;
     this.t = 0;
     if (!this.w.hasBuilding(this.team, 'conyard') && this.w.buildings(this.team).length === 0) return;
@@ -38,7 +39,8 @@ export class AI {
     this.upgrades();
     this.useSuper();
     this.attackLogic(d.need + d.growth * this.attacks, d.frac);
-    if (this.w.difficulty !== 'easy') { this.retreat(); this.raid(); this.engineers(); }
+    const diff = this.w.slots[this.team]?.difficulty ?? this.w.difficulty;
+    if (diff !== 'easy') { this.retreat(); this.raid(); this.engineers(); }
   }
 
   private home(): Entity | null { return this.w.entities.find(e => e.team === this.team && e.alive && e.kind === 'conyard') ?? this.w.buildings(this.team)[0] ?? null; }
@@ -56,7 +58,7 @@ export class AI {
   private raid() {
     this.raidT += 1; if (this.raidT < 25) return;
     const fast = this.army().filter(u => (u.kind === 'buggy' || u.kind === 'raider' || u.kind === 'heli' || u.kind === 'jet') && u.order.t === 'idle');
-    const foeH = this.w.entities.filter(e => e.alive && e.team !== this.team && e.kind === 'harvester');
+    const foeH = this.w.entities.filter(e => e.alive && this.w.isEnemy(this.team, e.team) && e.kind === 'harvester');
     if (fast.length < 2 || !foeH.length) return;
     this.raidT = 0;
     const sq = fast.slice(0, 3), c = sq[0];
@@ -71,7 +73,7 @@ export class AI {
     this.engT += 1;
     if (this.engT > 20 && ts.credits > 420 && w.canBuild(this.team, 'engineer') && this.count('engineer') < 2) { this.engT = 0; w.startProduction(this.team, 'engineer'); }
     if (this.engT > 12 && ts.credits > 700 && w.canBuild(this.team, 'apc') && this.count('apc') < 1 && this.count('engineer') > 0) w.startProduction(this.team, 'apc');
-    const foeB = w.entities.filter(e => e.alive && e.team !== this.team && e.building && e.kind !== 'wall' && e.kind !== 'conyard');
+    const foeB = w.entities.filter(e => e.alive && w.isEnemy(this.team, e.team) && e.building && e.kind !== 'wall' && e.kind !== 'conyard');
     if (!foeB.length) return;
     const engs = w.entities.filter(e => e.alive && e.team === this.team && e.kind === 'engineer' && e.order.t === 'idle');
     const apc = w.entities.find(e => e.alive && e.team === this.team && e.kind === 'apc');
@@ -90,8 +92,8 @@ export class AI {
 
   /** Usa o superpoder sobre o maior aglomerado de tropas ou construções do jogador (Normal/Difícil). */
   private useSuper() {
-    if (this.w.difficulty === 'easy' || this.ts.sp > 0 || !this.w.hasBuilding(this.team, 'radar')) return;
-    const foes = this.w.entities.filter(e => e.alive && e.team !== this.team && !e.building || (e.alive && e.team !== this.team && e.building));
+    if ((this.w.slots[this.team]?.difficulty ?? this.w.difficulty) === 'easy' || this.ts.sp > 0 || !this.w.hasBuilding(this.team, 'radar')) return;
+    const foes = this.w.entities.filter(e => e.alive && this.w.isEnemy(this.team, e.team));
     let best: Entity | null = null, bs = 0;
     for (const f of foes) {
       let sc = 0;
@@ -142,7 +144,7 @@ export class AI {
   }
 
   private humanHasAir(): boolean {
-    return this.w.entities.some(e => e.team !== this.team && e.alive && e.def.armor === 'air');
+    return this.w.entities.some(e => this.w.isEnemy(this.team, e.team) && e.alive && e.def.armor === 'air');
   }
 
   private trainUnits(saving: boolean, wantHarv: number, harvs: number) {
@@ -181,7 +183,7 @@ export class AI {
   }
 
   private pickTarget(): Entity | null {
-    const foes = this.w.entities.filter(e => e.team !== this.team && e.alive);
+    const foes = this.w.entities.filter(e => this.w.isEnemy(this.team, e.team) && e.alive);
     if (!foes.length) return null;
     const mine = this.army();
     const cx = mine.reduce((s, u) => s + u.x, 0) / Math.max(1, mine.length);
@@ -197,6 +199,9 @@ export class AI {
 
   private attackLogic(need: number, frac: number) {
     const army = this.army();
+    // partidas de 3+ times: se nenhum inimigo tem tropas armadas, não espera o exército crescer — termina o serviço
+    // (evita impasses em que todos ficam sem economia e a partida nunca acaba)
+    if (this.w.active.length >= 3 && !this.w.entities.some(e => e.alive && !e.building && e.def.damage > 0 && this.w.isEnemy(this.team, e.team))) need = Math.min(need, 4);
     const idle = army.filter(u => u.order.t === 'idle' && u.def.armor !== 'air' || (u.def.armor === 'air' && u.order.t === 'idle'));
     if (idle.length >= need) {
       const tgt = this.pickTarget();
@@ -206,9 +211,8 @@ export class AI {
       this.w.orderAMove(sq, Math.max(16, Math.min(MAP_W * TILE - 16, tgt.x)), Math.max(16, Math.min(MAP_H * TILE - 16, tgt.y)));
       this.attacks++;
       this.lastTarget = tgt;
-      const foe = (1 - this.team) as Team;
-      this.w.msg('⚠ Tropas inimigas avançando!', foe);
-      this.w.sound('wave', foe);
+      // avisa o time dono do alvo (e seus aliados humanos)
+      for (const foe of this.w.active) if (this.w.isAlly(foe, tgt.team)) { this.w.msg('⚠ Tropas inimigas avançando!', foe); this.w.sound('wave', foe); }
     }
     // reforços: quem ficou ocioso longe da base junta-se ao ataque em andamento
     if (this.lastTarget && this.lastTarget.alive) {

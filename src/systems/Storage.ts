@@ -19,13 +19,15 @@ export interface SaveData {
   enemy: 'auto' | 'solar' | 'ferro' | 'boreal' | 'viboras';
   startCredits: number; supers: boolean; fogOn: boolean; hpBars: 'hurt' | 'always' | 'sel'; shake: boolean; detailModels: boolean; voice: boolean; ach: Record<string, number>; stats: Record<string, number>;
   campaign: Record<string, number>; // id da missão -> estrelas (0 = não concluída)
+  /** escaramuça multijogador: nº de jogadores (2–4), tamanho do mapa, aliança de cada slot (mesma letra = aliados) e facção das IAs dos slots 2 e 3 */
+  players: number; mapSize: 64 | 96; alliances: number[]; slotFac: ('auto' | Faction)[];
 }
 
 const KEY = 'frente-de-ferro-save-v1';
 const DEFAULT: SaveData = {
   volume: 0.7, muted: false, difficulty: 'normal', faction: 'solar', mapId: 'planicie',
   wins: 0, losses: 0, winsByDiff: { easy: 0, normal: 0, hard: 0 },
-  musicVolume: 0.5, full: false, prologue: false, gameSpeed: 1, lang: 'auto', quality: 'auto', enemy: 'auto', startCredits: 2000, supers: true, fogOn: true, hpBars: 'hurt', shake: true, detailModels: true, voice: true, ach: {}, stats: {}, campaign: {},
+  musicVolume: 0.5, full: false, prologue: false, gameSpeed: 1, lang: 'auto', quality: 'auto', enemy: 'auto', startCredits: 2000, supers: true, fogOn: true, hpBars: 'hurt', players: 2, mapSize: 64, alliances: [0, 1, 2, 3], slotFac: ['auto', 'auto'], shake: true, detailModels: true, voice: true, ach: {}, stats: {}, campaign: {},
 };
 
 /** Persistência via Capacitor Preferences (nativo) com fallback automático para localStorage (web). */

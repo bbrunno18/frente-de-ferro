@@ -1,7 +1,7 @@
-import { MAP_W, MAP_H, TILE, WORLD_W, WORLD_H, FACTIONS } from '../config';
+import { MAP_W, MAP_H, TILE, WORLD_W, WORLD_H, TEAM_COLORS, Team } from '../config';
 import type { World } from '../systems/World';
 
-const S = 3; // pixels por tile no canvas interno
+const S_BASE = 3; // pixels por tile no canvas interno (64×64 → 192 px); o mapa 96 usa 2 px/tile → 192 px também
 export class Minimap {
   canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -9,10 +9,12 @@ export class Minimap {
   private offCtx: CanvasRenderingContext2D;
   private img: ImageData;
   private dragging = false;
+  private S = 3;
 
-  constructor(private world: World, private me: 0 | 1, private onNav: (wx: number, wy: number) => void) {
+  constructor(private world: World, private me: Team, private onNav: (wx: number, wy: number) => void) {
     this.canvas = document.createElement('canvas');
-    this.canvas.width = MAP_W * S; this.canvas.height = MAP_H * S;
+    this.S = MAP_W > 64 ? 2 : S_BASE; // mantém o minimapa com o mesmo tamanho na tela
+    this.canvas.width = MAP_W * this.S; this.canvas.height = MAP_H * this.S;
     this.canvas.className = 'minimap';
     this.ctx = this.canvas.getContext('2d')!;
     this.off = document.createElement('canvas');
@@ -33,7 +35,7 @@ export class Minimap {
   }
 
   draw(cam: { x: number; y: number; w: number; h: number }) {
-    const w = this.world, c = this.ctx;
+    const w = this.world, c = this.ctx, S = this.S;
     const W = this.canvas.width, H = this.canvas.height;
     if (w.teams[this.me].low) {
       // radar offline: estática
@@ -63,9 +65,9 @@ export class Minimap {
     c.drawImage(this.off, 0, 0, W, H);
     for (const e of w.entities) {
       if (!e.alive || !w.isVisible(e)) continue;
-      const mine = e.team === this.me;
-      c.fillStyle = mine ? FACTIONS[e.faction].main : '#ff4d3d';
-      if (e.building) { c.fillRect(e.tx * S, e.ty * S, e.def.w * S, e.def.h * S); c.strokeStyle = mine ? 'rgba(255,255,255,.5)' : '#ffd0cb'; c.lineWidth = 1; c.strokeRect(e.tx * S + 0.5, e.ty * S + 0.5, e.def.w * S - 1, e.def.h * S - 1); }
+      const mine = e.team === this.me, tc = TEAM_COLORS[e.team];
+      c.fillStyle = tc.main;
+      if (e.building) { c.fillRect(e.tx * S, e.ty * S, e.def.w * S, e.def.h * S); c.strokeStyle = mine ? 'rgba(255,255,255,.7)' : tc.light; c.lineWidth = 1; c.strokeRect(e.tx * S + 0.5, e.ty * S + 0.5, e.def.w * S - 1, e.def.h * S - 1); }
       else c.fillRect(Math.floor(e.x / TILE) * S - 1, Math.floor(e.y / TILE) * S - 1, 4, 4);
     }
     c.strokeStyle = '#ffffff'; c.lineWidth = 1.5;

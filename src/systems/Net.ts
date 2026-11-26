@@ -1,10 +1,16 @@
 import Peer, { DataConnection, PeerOptions } from 'peerjs';
 import type { Cmd, Snapshot } from './World';
-import type { Faction, Difficulty } from '../config';
+import type { Faction, Difficulty, Slot, Team, MapSize } from '../config';
 
 export type NetMsg =
   | { t: 'hello'; name: string }
-  | { t: 'start'; mapId: string; hostFaction: Faction; guestFaction: Faction }
+  /** host → todos: estado da sala (4 slots). `you` = slot de quem recebe. */
+  | { t: 'lobby'; slots: Slot[]; you: Team; mapId: string; mapSize: MapSize }
+  /** convidado → host: escolhe a própria facção e aliança */
+  | { t: 'pick'; faction: Faction; alliance: number }
+  /** host → cada convidado: inicia a partida (cada um recebe o seu `you`) */
+  | { t: 'start'; mapId: string; mapSize: MapSize; slots: Slot[]; you: Team; credits?: number; noSuper?: boolean; noFog?: boolean }
+  | { t: 'full' }
   | { t: 'cmd'; c: Cmd }
   | { t: 'snap'; s: Snapshot }
   | { t: 'crystal'; a: number[] }
@@ -39,17 +45,27 @@ function peerOptions(): PeerOptions {
   return o;
 }
 
+/** Máximo de convidados conectados ao host (sala de 4 vagas = host + 3). */
+export const MAX_PEERS = 3;
+
 export class NetSession {
   status: NetStatus = 'idle';
   code = '';
   error = '';
   isHost = false;
   peer: Peer | null = null;
+  /** convidado: a conexão com o host */
   conn: DataConnection | null = null;
+  /** host: convidados conectados (peerId → conexão) */
+  conns = new Map<string, DataConnection>();
   onStatus: (s: NetStatus) => void = () => {};
-  onMsg: (m: NetMsg) => void = () => {};
+  /** `from` = peerId do remetente (só no host) */
+  onMsg: (m: NetMsg, from?: string) => void = () => {};
+  /** host: um convidado entrou ('join') ou saiu ('leave') */
+  onPeer: (peerId: string, what: 'join' | 'leave') => void = () => {};
 
   private set(s: NetStatus, err = '') { this.status = s; this.error = err; this.onStatus(s); }
+  peerIds(): string[] { return [...this.conns.keys()]; }
 
   host(): Promise<string> {
     this.isHost = true;
@@ -63,14 +79,14 @@ export class NetSession {
           this.code = code; this.set('waiting'); res(code);
         });
         p.on('connection', c => {
-          if (this.conn) { c.close(); return; }
-          this.bind(c);
+          if (this.conns.size >= MAX_PEERS) { c.on('open', () => { try { c.send({ t: 'full' } as NetMsg); } catch { /* ignore */ } setTimeout(() => c.close(), 300); }); return; }
+          this.bindHost(c);
         });
         p.on('error', (e: { type?: string }) => {
           if (e.type === 'unavailable-id' && n < 4) { p.destroy(); tryOpen(n + 1); return; }
           this.set('error', e.type || 'erro de rede'); rej(e);
         });
-        p.on('disconnected', () => { if (this.status === 'waiting') { try { p.reconnect(); } catch { /* ignore */ } } });
+        p.on('disconnected', () => { if (this.status === 'waiting' || this.status === 'connected') { try { p.reconnect(); } catch { /* ignore */ } } });
       };
       tryOpen(0);
     });
@@ -96,6 +112,19 @@ export class NetSession {
     });
   }
 
+  /** host: conexão de um convidado */
+  private bindHost(c: DataConnection) {
+    c.on('open', () => {
+      this.conns.set(c.peer, c);
+      this.set('connected');
+      this.onPeer(c.peer, 'join');
+    });
+    c.on('data', d => this.onMsg(d as NetMsg, c.peer));
+    const gone = () => { if (this.conns.delete(c.peer)) { this.onPeer(c.peer, 'leave'); if (this.conns.size === 0 && this.status === 'connected') this.set('waiting'); } };
+    c.on('close', gone); c.on('error', gone);
+  }
+
+  /** convidado: conexão com o host */
   private bind(c: DataConnection, opened?: () => void) {
     this.conn = c;
     c.on('open', () => { this.set('connected'); opened?.(); });
@@ -104,13 +133,22 @@ export class NetSession {
     c.on('error', () => { if (this.status !== 'closed') this.set('closed'); });
   }
 
+  /** host: envia a TODOS os convidados; convidado: envia ao host */
   send(m: NetMsg) {
+    if (this.isHost) { for (const c of this.conns.values()) if (c.open) { try { c.send(m); } catch { /* ignore */ } } return; }
     if (this.conn && this.conn.open) { try { this.conn.send(m); } catch { /* ignore */ } }
+  }
+  /** host: envia a um convidado específico */
+  sendTo(peerId: string, m: NetMsg) {
+    const c = this.conns.get(peerId);
+    if (c && c.open) { try { c.send(m); } catch { /* ignore */ } }
   }
 
   close() {
     this.send({ t: 'bye' });
     this.status = 'closed';
+    for (const c of this.conns.values()) { try { c.close(); } catch { /* ignore */ } }
+    this.conns.clear();
     try { this.conn?.close(); } catch { /* ignore */ }
     try { this.peer?.destroy(); } catch { /* ignore */ }
     this.conn = null; this.peer = null;

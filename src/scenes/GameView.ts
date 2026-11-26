@@ -6,7 +6,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
-  MAPS, DEFS, Kind, MatchOpts, TILE, MAP_W, MAP_H, WORLD_W, WORLD_H, COMBAT, FACTIONS, DIFFS, MAX_TECH, VET_NAMES, Team, Role,
+  MAPS, DEFS, Kind, MatchOpts, TEAM_COLORS, TILE, MAP_W, MAP_H, WORLD_W, WORLD_H, COMBAT, FACTIONS, DIFFS, MAX_TECH, VET_NAMES, Team, Role,
 } from '../config';
 import { World, Cmd, Fx, TeamMsg, TeamSound } from '../systems/World';
 import { Entity } from '../entities/Entity';
@@ -182,14 +182,14 @@ export class GameView {
   constructor(private opts: MatchOpts, private host: HTMLElement) {
     (window as unknown as { __ffr: GameView }).__ffr = this;
     this.role = opts.role;
-    this.me = this.role === 'guest' ? 1 : 0;
+    this.me = opts.myTeam ?? (this.role === 'guest' ? 1 : 0);
     const o = opts;
     const ms = o.mission;
     this.world = ms
       ? new World({ mapId: ms.mapId, difficulty: ms.difficulty, faction: ms.faction, enemyFaction: ms.enemy, vsAI: ms.ai, bare: ms.bare, customWin: ms.custom, startCredits: ms.credits, enemyCredits: ms.enemyCredits })
       : this.role === 'guest'
-      ? new World({ mapId: o.mapId, difficulty: o.difficulty, faction: o.enemyFaction ?? 'ferro', enemyFaction: o.faction, vsAI: false, mirror: true, viewTeam: 1 })
-      : new World({ mapId: o.mapId, difficulty: o.difficulty, faction: o.faction, enemyFaction: o.enemyFaction, vsAI: this.role === 'solo', startCredits: o.credits, enemyCredits: o.credits, noSuper: o.noSuper, noFog: o.noFog });
+      ? new World({ mapId: o.mapId, difficulty: o.difficulty, faction: o.enemyFaction ?? 'ferro', enemyFaction: o.faction, vsAI: false, mirror: true, viewTeam: this.me, slots: o.slots, mapSize: o.mapSize })
+      : new World({ mapId: o.mapId, difficulty: o.difficulty, faction: o.faction, enemyFaction: o.enemyFaction, vsAI: this.role === 'solo' || (this.role === 'host' && !!o.slots), startCredits: o.credits, enemyCredits: o.credits, noSuper: o.noSuper, noFog: o.noFog, slots: o.slots, mapSize: o.mapSize });
     if (ms) { ms.setup(this.world); this.world.updatePower(); this.world.updateFog(); this.runner = new MissionRunner(ms, this.world); }
     const q = Storage.data.quality, coarse0 = matchMedia('(pointer: coarse)').matches;
     const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 4; // GB aproximados; aparelhos fracos começam no modo leve
@@ -202,7 +202,7 @@ export class GameView {
     this.initScene();
     const w = this.world, me = this.me;
     const base = w.entities.find(e => e.team === me && e.kind === 'conyard');
-    if (base) { this.target.set(base.x + (me === 0 ? 90 : -90), 0, base.y + (me === 0 ? -50 : 50)); this.centered = true; }
+    if (base) { { const cn = w.corner(me); this.target.set(base.x + (cn.fx ? -90 : 90), 0, base.y + (cn.fy ? 50 : -50)); } this.centered = true; }
     else this.target.set(WORLD_W / 2, 0, WORLD_H / 2);
     this.startTarget.copy(this.target);
     setGlbEnabled(this.q !== 'low');
@@ -612,26 +612,38 @@ export class GameView {
   private setupNet() {
     const net = this.opts.net;
     if (!net || this.role === 'solo') return;
-    net.onMsg = (m: NetMsg) => {
+    net.onMsg = (m: NetMsg, from?: string) => {
       if (m.t === 'cmd' && this.role === 'host') {
-        const err = this.world.applyCommand(1, m.c);
-        if (err) this.world.msg(err, 1);
+        // o time é decidido pelo host a partir de quem enviou (o convidado não pode comandar outro time)
+        const team = this.world.active.find(t => this.world.slots[t].peerId === from);
+        if (team === undefined || this.world.teams[team].out) return;
+        const err = this.world.applyCommand(team, m.c);
+        if (err) this.world.msg(err, team);
       } else if (m.t === 'snap' && this.role === 'guest') {
         this.world.applySnapshot(m.s);
         if (!this.centered) {
           const base = this.world.entities.find(e => e.team === this.me && e.kind === 'conyard');
-          if (base) { this.target.set(base.x - 90, 0, base.y + 50); this.centered = true; }
+          if (base) { const cn = this.world.corner(this.me); this.target.set(base.x + (cn.fx ? -90 : 90), 0, base.y + (cn.fy ? 50 : -50)); this.centered = true; }
         }
       } else if (m.t === 'crystal' && this.role === 'guest') this.world.applyCrystal(m.a);
-      else if (m.t === 'bye') this.opponentLeft();
+      else if (m.t === 'bye' && this.role === 'guest') this.opponentLeft();
     };
-    net.onStatus = st => { if (st === 'closed' || st === 'error') this.opponentLeft(); };
+    // host: um amigo saiu => ele se rende (perde as construções); a partida segue para os demais
+    net.onPeer = (peerId, what) => {
+      if (what !== 'leave' || this.role !== 'host' || this.over) return;
+      const team = this.world.active.find(t => this.world.slots[t].peerId === peerId);
+      if (team === undefined) return;
+      this.world.surrender(team);
+      this.hud.toast(`${TEAM_COLORS[team].name} saiu da partida`, 2600);
+    };
+    // convidado: a conexão com o host caiu => a partida acabou
+    net.onStatus = st => { if (this.role === 'guest' && (st === 'closed' || st === 'error')) this.opponentLeft(); };
     if (this.role === 'host') net.send({ t: 'crystal', a: this.world.crystalSnap() });
   }
   private opponentLeft() {
     if (this.over || this.left) return;
     this.left = true; this.over = true; sfx.win();
-    this.hud.showPanel('Conexão encerrada', 'Seu amigo saiu da partida. Você vence por abandono!', [{ label: '⟲ Menu principal', fn: () => this.exit() }]);
+    this.hud.showPanel('Conexão encerrada', this.role === 'guest' ? 'O anfitrião saiu da partida.' : 'Seu amigo saiu da partida. Você vence por abandono!', [{ label: '⟲ Menu principal', fn: () => this.exit() }]);
   }
   private cmd(c: Cmd) {
     if (this.role === 'guest') { this.opts.net?.send({ t: 'cmd', c }); return; }
@@ -779,9 +791,9 @@ export class GameView {
       return;
     }
     if (movers.length) {
-      if (hit && hit.team !== this.me) { this.cmd({ c: 'atk', ids: movers.map(m => m.id), t: hit.id }); this.marks.push({ x: hit.x, y: hit.y, t: 0 }); }
+      if (hit && this.world.isEnemy(this.me, hit.team)) { this.cmd({ c: 'atk', ids: movers.map(m => m.id), t: hit.id }); this.marks.push({ x: hit.x, y: hit.y, t: 0 }); }
       else { this.cmd({ c: 'move', ids: movers.map(m => m.id), x: g.x, y: g.y }); this.marks.push({ x: g.x, y: g.y, t: 0 }); }
-      sfx.order(); this.ack(hit && hit.team !== this.me ? 'atk' : 'move'); this.runner?.note(hit && hit.team !== this.me ? 'attack' : 'move');
+      sfx.order(); this.ack(hit && this.world.isEnemy(this.me, hit.team) ? 'atk' : 'move'); this.runner?.note(hit && this.world.isEnemy(this.me, hit.team) ? 'attack' : 'move');
     } else if (hit) { this.inspect = hit; this.selection = []; sfx.select(); }
     else { this.selection = []; this.inspect = null; }
   }
@@ -796,9 +808,9 @@ export class GameView {
     const g = this.ground(sx, sy); if (!g) return;
     const hit = this.pick(sx, sy), ids = movers.map(m => m.id);
     if (hit && hit.team === this.me && hit.kind === 'apc' && movers.some(m => m.def.category === 'infantry')) this.cmd({ c: 'board', ids: movers.filter(m => m.def.category === 'infantry').map(m => m.id), t: hit.id });
-    else if (hit && hit.team !== this.me) this.cmd({ c: 'atk', ids, t: hit.id }); else this.cmd({ c: 'move', ids, x: g.x, y: g.y });
+    else if (hit && this.world.isEnemy(this.me, hit.team)) this.cmd({ c: 'atk', ids, t: hit.id }); else this.cmd({ c: 'move', ids, x: g.x, y: g.y });
     this.marks.push({ x: g.x, y: g.y, t: 0 });
-    sfx.order(); this.ack(hit && hit.team !== this.me ? 'atk' : 'move'); this.runner?.note(hit && hit.team !== this.me ? 'attack' : 'move');
+    sfx.order(); this.ack(hit && this.world.isEnemy(this.me, hit.team) ? 'atk' : 'move'); this.runner?.note(hit && this.world.isEnemy(this.me, hit.team) ? 'attack' : 'move');
   }
 
   onBox(x0: number, y0: number, x1: number, y1: number) {
@@ -1049,7 +1061,7 @@ export class GameView {
   private exit() { this.opts.onExit(); }
   private finish() {
     this.over = true;
-    const win = this.world.winner === this.me;
+    const win = this.world.winner !== null && this.world.isAlly(this.me, this.world.winner);
     voice.say(win ? 'win' : 'lose');
     if (this.role === 'solo' && !this.opts.mission) { Storage.recordResult(win, this.opts.difficulty); Achievements.skirmishEnd(win, this.world.teams[this.me].faction, this.opts.difficulty, this.opts.mapId, this.world.time, this.world.teams[this.me].kills); }
     else Achievements.add('kills', this.world.teams[this.me].kills);
@@ -1286,6 +1298,25 @@ export class GameView {
   private updateScorches(dt: number) { for (const o of this.scorches) { o.t += dt; (o.m.material as THREE.MeshBasicMaterial).opacity = Math.max(0.25, 0.85 - o.t / 120); } }
 
   // ---------- entidades 3D ----------
+  /** marca de time no chão (anel luminoso) e estandarte nos prédios: só quando 3+ times ou facções repetidas */
+  private get teamMarks(): boolean {
+    const a = this.world.active; if (a.length > 2) return true;
+    return new Set(a.map(t => this.world.teams[t].faction)).size < a.length;
+  }
+  private addTeamMark(g: THREE.Group, e: Entity) {
+    const col = TEAM_COLORS[e.team]?.main; if (!col) return;
+    const bb = new THREE.Box3().setFromObject(g), sz = bb.getSize(new THREE.Vector3()), c = bb.getCenter(new THREE.Vector3());
+    const rad = e.building ? Math.max(sz.x, sz.z) * 0.5 : Math.max(sz.x, sz.z) * 0.5 + 2;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(rad, rad + (e.building ? 1.6 : 1.1), 28), mat(col, { emissive: col, ei: 0.45, grain: false }));
+    ring.rotation.x = -Math.PI / 2; ring.position.set(c.x, 0.7, c.z); ring.userData.teamMark = true; g.add(ring);
+    if (e.building) { // estandarte no canto do telhado
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 14, 6), mat('#222', { grain: false }));
+      const flag = new THREE.Mesh(new THREE.BoxGeometry(12, 7, 0.8), mat(col, { emissive: col, ei: 0.5, grain: false }));
+      pole.position.set(bb.max.x - 3, bb.max.y + 7, bb.min.z + 3); flag.position.set(bb.max.x + 1.5, bb.max.y + 11, bb.min.z + 3);
+      g.add(pole, flag);
+    }
+  }
+
   private syncEntities(dt: number) {
     const w = this.world, seen = new Set<number>();
     this.engAcc = [0, 0, 0];
@@ -1297,6 +1328,7 @@ export class GameView {
       if (!r) {
         const g = buildModel(e.kind, e.faction, this.q !== 'low');
         g.userData.eid = e.id;
+        if (this.teamMarks) this.addTeamMark(g, e);
         r = { g, t0: this.clock, lx: e.x, ly: e.y, dust: 0, h: g.userData.h ?? 20, head: g.userData.head, spin: g.userData.spin, spinSpeed: g.userData.spinSpeed ?? 0, spinObj: g.userData.spinObj, axis: g.userData.spinAxis ?? 'y', legs: g.userData.legs, barrel: g.userData.barrel, barrelX: g.userData.barrel ? g.userData.barrel.position.x : 0, kick: 0, phase: Math.random() * 6, moving: 0, tm: e.team, fc: e.faction, e };
         this.scene.add(g); this.ents.set(e.id, r);
         if (e.building && this.clock > 2) { for (let i = 0; i < 6; i++) this.puff(e.x + rnd(-e.def.w * 14, e.def.w * 14), 3, e.y + rnd(-e.def.h * 14, e.def.h * 14), 0xb7a98a); }
@@ -1544,7 +1576,7 @@ export class GameView {
     if (kills > this.lastKills) { this.streak += kills - this.lastKills; this.streakT = 4; this.lastKills = kills; this.streakFx(this.streak); }
     if (this.streakT > 0) { this.streakT -= dt; if (this.streakT <= 0) this.streak = 0; }
     // estrutura inimiga destruída
-    const eb = w.buildings(me === 0 ? 1 : 0).length;
+    const eb = w.active.reduce<number>((n, t) => n + (w.isEnemy(me, t) ? w.buildings(t).length : 0), 0);
     if (this.lastEnemyB < 0) this.lastEnemyB = eb;
     if (eb < this.lastEnemyB && this.lastEnemyB > 0) { this.banner('ESTRUTURA INIMIGA DESTRUÍDA', 'gold'); sfx.streak(4); this.shake = Math.min(3.4, this.shake + 1); this.flashA = Math.min(0.6, this.flashA + 0.25); }
     this.lastEnemyB = eb;
@@ -1652,11 +1684,11 @@ export class GameView {
     for (const e of w.entities) {
       if (!e.alive || !w.isVisible(e)) continue;
       const r = this.ents.get(e.id); if (!r) continue;
-      const sel = this.selection.includes(e) || this.inspect === e, mine = e.team === me;
+      const sel = this.selection.includes(e) || this.inspect === e, mine = e.team === me, tcol = TEAM_COLORS[e.team];
       if (sel) {
-        const col = mine ? '#7cfc9a' : '#ff6b5e';
+        const col = mine ? '#7cfc9a' : tcol.light;
         if (e.building) this.brackets(this.rectPoly(e.tx * TILE - 1, e.ty * TILE - 1, (e.tx + e.def.w) * TILE + 1, (e.ty + e.def.h) * TILE + 1), col);
-        else { const pulse = 0.55 + 0.45 * Math.sin(this.clock * 5); this.poly(this.ringPoly(r.fx ?? e.x, r.fz ?? e.y, e.radius + 4), col, 2.4, mine ? 'rgba(124,252,154,.10)' : 'rgba(255,107,94,.12)'); this.poly(this.ringPoly(r.fx ?? e.x, r.fz ?? e.y, e.radius + 7 + pulse * 1.5), mine ? `rgba(124,252,154,${0.25 * pulse})` : `rgba(255,107,94,${0.25 * pulse})`, 1.2); }
+        else { const pulse = 0.55 + 0.45 * Math.sin(this.clock * 5); this.poly(this.ringPoly(r.fx ?? e.x, r.fz ?? e.y, e.radius + 4), col, 2.4, mine ? 'rgba(124,252,154,.10)' : tcol.main + '33'); this.poly(this.ringPoly(r.fx ?? e.x, r.fz ?? e.y, e.radius + 7 + pulse * 1.5), mine ? `rgba(124,252,154,${0.25 * pulse})` : `rgba(255,107,94,${0.25 * pulse})`, 1.2); }
       }
       const hurt = e.hp < e.maxHp, hb = Storage.data.hpBars, showBar = hb === 'always' ? (e.building ? hurt || sel : true) : hb === 'sel' ? sel : sel || hurt;
       if (showBar || e.tech > 1 || (!e.building && e.vet > 1)) {
@@ -1666,6 +1698,7 @@ export class GameView {
         const bw = e.building ? Math.max(34, e.def.w * 24) : Math.max(24, e.radius * 2.1), bx = p.x - bw / 2, by = p.y - 6, f = e.hp / e.maxHp;
         if (showBar) {
           c.fillStyle = 'rgba(0,0,0,.78)'; c.fillRect(bx - 1.5, by - 1.5, bw + 3, 7);
+          c.fillStyle = tcol.main; c.fillRect(bx - 1.5, by - 4, bw + 3, 2.5); // faixa na cor do slot
           c.fillStyle = f > 0.5 ? '#4cd964' : f > 0.25 ? '#ffcc00' : '#ff3b30'; c.fillRect(bx, by, bw * f, 4);
           if (sel && e.kind === 'harvester' && mine) { c.fillStyle = '#3fb8ff'; c.fillRect(bx, by + 6, bw * (e.cargo / 300), 2.5); }
         }

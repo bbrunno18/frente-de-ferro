@@ -1,10 +1,37 @@
 export const TILE = 32;
-export const MAP_W = 64;
-export const MAP_H = 64;
-export const WORLD_W = MAP_W * TILE;
-export const WORLD_H = MAP_H * TILE;
+/** Tamanho do mapa em tiles. São "live bindings": `setMapSize` (chamado pelo World ao nascer) altera todos os importadores. */
+export const MAP_SIZES = [64, 96] as const;
+export type MapSize = typeof MAP_SIZES[number];
+export let MAP_W = 64;
+export let MAP_H = 64;
+export let WORLD_W = MAP_W * TILE;
+export let WORLD_H = MAP_H * TILE;
+export function setMapSize(n: number) { MAP_W = n; MAP_H = n; WORLD_W = n * TILE; WORLD_H = n * TILE; }
 
-export type Team = 0 | 1;
+/** 0..3 = slots da partida. Só 0 e 1 existem no modo clássico (campanha, 1v1). */
+export type Team = 0 | 1 | 2 | 3;
+export const MAX_TEAMS = 4;
+export const TEAMS: Team[] = [0, 1, 2, 3];
+export type SlotType = 'human' | 'ai' | 'empty';
+export interface Slot { active: boolean; type: SlotType; faction: Faction; alliance: number; difficulty?: Difficulty; peerId?: string; name?: string }
+/** Cores de identificação por slot (minimapa, barras de vida, anéis de seleção). */
+export const TEAM_COLORS: { name: string; main: string; light: string; accent: string }[] = [
+  { name: 'Azul', main: '#3a7bd5', light: '#8fb8f0', accent: '#e8c25a' },
+  { name: 'Vermelho', main: '#d24b3c', light: '#f0958a', accent: '#f2d9d4' },
+  { name: 'Verde', main: '#1fae7a', light: '#7fe0b8', accent: '#d8f5e8' },
+  { name: 'Roxo', main: '#8a5cc6', light: '#c4a6ec', accent: '#f08a3c' },
+];
+export const ALLIANCE_NAMES = ['A', 'B', 'C', 'D'];
+/** Slots padrão: 2 jogadores (cada um na sua aliança). */
+export function defaultSlots(f0: Faction, f1: Faction, d: Difficulty = 'normal'): Slot[] {
+  const f2: Faction[] = ['viboras', 'boreal'];
+  return [
+    { active: true, type: 'human', faction: f0, alliance: 0 },
+    { active: true, type: 'ai', faction: f1, alliance: 1, difficulty: d },
+    { active: false, type: 'empty', faction: f2[0], alliance: 2, difficulty: d },
+    { active: false, type: 'empty', faction: f2[1], alliance: 3, difficulty: d },
+  ];
+}
 export type Armor = 'inf' | 'veh' | 'bld' | 'air';
 export type Faction = 'solar' | 'ferro' | 'boreal' | 'viboras';
 export type Difficulty = 'easy' | 'normal' | 'hard';
@@ -166,6 +193,12 @@ export interface MatchOpts {
   credits?: number; noSuper?: boolean; noFog?: boolean;
   mapId: string;
   role: Role;
+  /** 4 slots (ativos ou não). Ausente = partida clássica de 2 jogadores. */
+  slots?: Slot[];
+  /** 64 (padrão) ou 96; com 3–4 jogadores o mapa é sempre 96. */
+  mapSize?: MapSize;
+  /** time controlado por este aparelho (online: o do convidado) */
+  myTeam?: Team;
   mission?: import('./campaign/missions').Mission;
   onNext?: (m: import('./campaign/missions').Mission) => void;
   net?: import('./systems/Net').NetSession;

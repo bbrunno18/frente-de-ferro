@@ -498,3 +498,17 @@ html[data-orient='portrait'] .desel { padding: 9px 18px; font-size: 13px; }
 #game > .actions.fab button.sp.off { opacity: .5; }
 html[data-dev='tablet'] #game > .actions.fab button { width: 52px; height: 52px; font-size: 22px; }
 html[data-dev='tablet'] #game > .actions.fab button.sp { width: 60px; height: 60px; }
+
+/* ---- 3–4 jogadores: slots, alianças e lobby ---- */
+.slots { display: flex; flex-direction: column; gap: 5px; margin: 6px 0; }
+.slot-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 8px; border: 1px solid var(--line); border-left: 4px solid var(--c, #888); border-radius: 8px; background: rgba(8, 14, 24, .55); }
+.slot-row.me { background: rgba(40, 70, 110, .35); }
+.slot-row > i { width: 10px; height: 10px; background: var(--c, #888); border: 1px solid #000; transform: rotate(45deg); flex: none; }
+.slot-row .sl-name { font: 800 12px system-ui; min-width: 84px; }
+.slot-row .sl-fac { font: 600 12px system-ui; color: #b8c8dc; flex: 1; }
+.slot-row select { flex: 1; min-width: 110px; max-width: 190px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: #0d1624; color: #e4ecf7; font: 700 12px system-ui; }
+.slot-row .als { display: inline-flex; gap: 4px; margin-left: auto; }
+.chip.tiny { padding: 3px 8px; font-size: 11px; min-width: 26px; justify-content: center; }
+.chip:disabled { opacity: .4; }
+.hint.warn { color: #ff9b8f; }
+.lobby .panel.lob { max-height: 92vh; overflow-y: auto; }
