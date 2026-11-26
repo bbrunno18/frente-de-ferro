@@ -81,6 +81,7 @@ export class GameView {
   private input!: Input3D;
   private hintDesel = false;
   private partMax = 420;
+  private ctxLost = false;
   private perf = { t: 0, n: 0, sum: 0, step: 0 };
   /** Qualidade automática: no modo "Automático", mede o FPS real do aparelho e alivia a carga em etapas
    *  (bloom → sombras → resolução → partículas) até a partida ficar fluida. Nunca volta a pesar sozinho. */
@@ -191,8 +192,11 @@ export class GameView {
       : new World({ mapId: o.mapId, difficulty: o.difficulty, faction: o.faction, enemyFaction: o.enemyFaction, vsAI: this.role === 'solo', startCredits: o.credits, enemyCredits: o.credits, noSuper: o.noSuper, noFog: o.noFog });
     if (ms) { ms.setup(this.world); this.world.updatePower(); this.world.updateFog(); this.runner = new MissionRunner(ms, this.world); }
     const q = Storage.data.quality, coarse0 = matchMedia('(pointer: coarse)').matches;
-    this.q = q === 'auto' ? (coarse0 ? 'med' : 'high') : q;
+    const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 4; // GB aproximados; aparelhos fracos começam no modo leve
+    this.q = q === 'auto' ? (coarse0 ? (mem <= 3 ? 'low' : 'med') : 'high') : q;
     this.dpr = Math.min(window.devicePixelRatio || 1, this.q === 'high' ? 2 : this.q === 'med' ? 1.5 : 1);
+    // Celular: limita os pixels desenhados (~1,3 milhão) para não estourar a memória de vídeo
+    if (coarse0) this.dpr = Math.max(0.75, Math.min(this.dpr, Math.sqrt(1.3e6 / Math.max(1, innerWidth * innerHeight))));
     music.play('battle'); sfx.ambience(true, (MAPS.find(m => m.id === this.opts.mapId)?.biome ?? 'grass') === 'desert');
     this.initRenderer();
     this.initScene();
@@ -230,6 +234,13 @@ export class GameView {
     r.shadowMap.enabled = this.q !== 'low'; r.shadowMap.type = THREE.PCFSoftShadowMap;
     r.domElement.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none';
     this.host.append(r.domElement);
+    // Se o celular perder o gráfico 3D (pouca memória de vídeo), tenta se recuperar no modo leve em vez de ficar tela branca
+    r.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); this.ctxLost = true; });
+    r.domElement.addEventListener('webglcontextrestored', () => {
+      this.ctxLost = false; this.sun.castShadow = false; r.shadowMap.enabled = false; r.shadowMap.needsUpdate = true;
+      this.composer = null; this.bloom = null; r.domElement.style.filter = ''; this.dpr = Math.min(this.dpr, 1); r.setPixelRatio(this.dpr); this.resize();
+      this.hud.toast('Gráficos reduzidos para economizar memória', 2600);
+    });
     if (this.q !== 'low') r.domElement.style.filter = 'saturate(.84) contrast(1.24) brightness(1.04)';
     this.renderer = r;
     this.cam = new THREE.PerspectiveCamera(38, 1, 20, 6000);
@@ -301,7 +312,7 @@ export class GameView {
     }
     const sun = new THREE.DirectionalLight(mood.sun, mood.sunI);
     const coarse = matchMedia('(pointer: coarse)').matches;
-    sun.castShadow = this.q !== 'low'; sun.shadow.mapSize.set(this.q === 'high' && !coarse ? 2048 : 1024, this.q === 'high' && !coarse ? 2048 : 1024);
+    sun.castShadow = this.q !== 'low'; { const ms = this.q === 'high' && !coarse ? 2048 : coarse ? 512 : 1024; sun.shadow.mapSize.set(ms, ms); }
     sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.6; sun.shadow.radius = this.q === 'high' ? 1.4 : 1.2;
     sc.add(sun, sun.target);
     this.sun = sun;
@@ -1078,6 +1089,7 @@ export class GameView {
     this.autoQuality(raw);
     this.update(dt);
     this.applyCam();
+    if (this.ctxLost) return;
     if (this.composer) this.composer.render(); else this.renderer.render(this.scene, this.cam);
     this.drawOverlay(dt);
   }
