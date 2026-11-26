@@ -122,7 +122,7 @@ class MusicEngine {
       if (pos === 0) { tri.forEach(n => this.voice(L.strings, t, NOTE(n), barDur, 'sawtooth', 0.045, 0.7, 8)); this.voice(L.bass, t, NOTE(root), barDur, 'sine', 0.2, 0.3, 0); }
       if (pos === 0 && bar % 2 === 0) this.kick(t, 0.3, 80);
       if (pos === 0 && bar === 0 && i % 128 === 0) this.crash(t);
-      if (pos % 4 === 0 && i % 128 >= 64) this.voice(L.lead, t, NOTE(tri[(pos >> 2) % 3] + 12), sp * 3.6, 'triangle', 0.05, 0.01, 0); // arpejo suave
+      if (pos % 4 === 0 && i % 128 >= 64) this.voice(L.lead, t, NOTE(tri[(pos >> 2) % 3] + 12), sp * 3.6, 'sine', 0.06, 0.01, 0); // arpejo suave
       for (const [s, n, len] of MEL) if (s === i % 128 && i % 256 < 128) this.voice(L.brass, t, NOTE(n - 12), len * sp, 'sawtooth', 0.045, 0.12, 5, 14);
       return;
     }

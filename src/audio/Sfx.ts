@@ -6,6 +6,9 @@ type Wave = OscillatorType;
 export interface Spatial { pan?: number; gain?: number }
 export interface AudioBus { ctx: AudioContext; out: GainNode; rev: GainNode }
 
+/** MIXAGEM — ajuste aqui o volume relativo de cada categoria (1 = normal). O volume geral fica no menu (sfx.setVolume). */
+export const MIX = { war: 1, ui: 1, alarm: 1, engine: 1, fanfare: 1 };
+
 const TAU = Math.PI * 2;
 const rnd = Math.random;
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
@@ -39,6 +42,8 @@ class SfxEngine {
   private active = 0;
   private loops: Record<'tank' | 'heli' | 'jet' | 'war', { src: AudioBufferSourceNode; g: GainNode } | undefined> = { tank: undefined, heli: undefined, jet: undefined, war: undefined };
   private mixT = 0;
+  private ext: Record<string, AudioBuffer[]> = {};
+  private pending: Record<string, string | string[]> | null = null;
 
   /** Deve ser chamado dentro de um gesto do usuário (toque/clique). */
   unlock() {
@@ -48,6 +53,8 @@ class SfxEngine {
       this.ctx = new AC();
       this.setup(this.ctx);
       this.apply();
+      if (this.pending) { const m = this.pending; this.pending = null; void this.loadFiles(m); }
+      if (this.pending) { const m = this.pending; this.pending = null; void this.loadFiles(m); }
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume().catch(() => undefined);
   }
@@ -215,7 +222,7 @@ class SfxEngine {
     // inicia os laços silenciosos
     const out = this.master!;
     for (const k of ['tank', 'heli', 'jet', 'war'] as const) {
-      const src = ctx.createBufferSource(); src.buffer = this.bufs[k][0]; src.loop = true;
+      const src = ctx.createBufferSource(); src.buffer = this.ext[k]?.[0] ?? this.bufs[k][0]; src.loop = true;
       const g = ctx.createGain(); g.gain.value = 0;
       src.connect(g); g.connect(out); if (k !== 'war') { const s = ctx.createGain(); s.gain.value = 0.12; g.connect(s); s.connect(this.revIn!); }
       src.start(); this.loops[k] = { src, g };
@@ -243,7 +250,30 @@ class SfxEngine {
     this.active++; src.onended = () => { this.active--; src.disconnect(); };
     src.start();
   }
-  private pick(k: string): AudioBuffer | undefined { const a = this.bufs[k]; return a ? a[Math.floor(rnd() * a.length)] : undefined; }
+  private pick(k: string): AudioBuffer | undefined { const a = this.ext[k]?.length ? this.ext[k] : this.bufs[k]; return a ? a[Math.floor(rnd() * a.length)] : undefined; }
+  /** Se existir um arquivo gravado para este som, toca-o e devolve true (o som sintético é então pulado). */
+  private file(k: string, vol: number, o?: Spatial, wet = 0.2): boolean {
+    const b = this.ext[k]?.length ? this.pick(k) : undefined; if (!b) return false; this.play(b, vol, o, 1, wet); return true;
+  }
+  /**
+   * Troca sons sintetizados por arquivos gravados (.ogg/.mp3/.wav). Pode chamar antes do primeiro toque: fica na fila.
+   * Nomes: click select order error ready place sell alert lowPower wave rank upgrade radio win lose streak objective slam
+   *        boom0 boom1 boom2 boom3 bullet shell rocket laser flame hit die  |  laços: tank heli jet war
+   * Aceita um arquivo ou uma lista (sorteia entre eles para não repetir). Ex.: sfx.loadFiles({ boom3: ['audio/b1.ogg','audio/b2.ogg'] })
+   */
+  async loadFiles(map: Record<string, string | string[]>) {
+    const ctx = this.ctx; if (!ctx) { this.pending = { ...(this.pending ?? {}), ...map }; return; }
+    for (const [k, v] of Object.entries(map)) {
+      const bufs: AudioBuffer[] = [];
+      for (const url of Array.isArray(v) ? v : [v]) {
+        try { const r = await fetch(url); bufs.push(await ctx.decodeAudioData(await r.arrayBuffer())); } catch { /* arquivo ausente: mantém o som sintético */ }
+      }
+      if (!bufs.length) continue;
+      this.ext[k] = bufs;
+      const l = (this.loops as Record<string, { src: AudioBufferSourceNode; g: GainNode } | undefined>)[k];
+      if (l) { try { l.src.stop(); } catch { /* já parado */ } const n = ctx.createBufferSource(); n.buffer = bufs[0]; n.loop = true; n.connect(l.g); n.start(); l.src = n; }
+    }
+  }
 
   /** Contexto e saída mestre (usados pela trilha musical). */
   private amb: { stop: () => void } | null = null;
@@ -280,9 +310,9 @@ class SfxEngine {
       const l = this.loops[k]; if (!l) return;
       l.g.gain.setTargetAtTime(g, c.currentTime, 0.35); l.src.playbackRate.setTargetAtTime(rate, c.currentTime, 0.4);
     };
-    set('tank', Math.min(0.55, 0.12 * Math.sqrt(tanks)) * (tanks ? 1 : 0), 0.92 + Math.min(0.2, tanks * 0.015));
-    set('heli', Math.min(0.5, 0.2 * Math.sqrt(helis)) * (helis ? 1 : 0), 1 + Math.min(0.1, helis * 0.02));
-    set('jet', Math.min(0.4, 0.15 * Math.sqrt(jets)) * (jets ? 1 : 0), 0.95 + Math.min(0.15, jets * 0.03));
+    set('tank', MIX.engine * Math.min(0.55, 0.12 * Math.sqrt(tanks)) * (tanks ? 1 : 0), 0.92 + Math.min(0.2, tanks * 0.015));
+    set('heli', MIX.engine * Math.min(0.5, 0.2 * Math.sqrt(helis)) * (helis ? 1 : 0), 1 + Math.min(0.1, helis * 0.02));
+    set('jet', MIX.engine * Math.min(0.4, 0.15 * Math.sqrt(jets)) * (jets ? 1 : 0), 0.95 + Math.min(0.15, jets * 0.03));
     set('war', 0.45 * clamp(combat, 0, 1));
   }
   /** Silencia os motores (fim de partida / pausa). */
@@ -329,84 +359,118 @@ class SfxEngine {
     this.burst(0.06, vol * 0.35, 200, 1800, delay);
   }
 
+  /** metal batido: FM inarmônico (moduladores a 1,41× e 2,76×) — soa como chapa/trava de aço, não como bip */
+  private clank(freq: number, dur: number, vol: number, delay = 0, wet = 0.15) {
+    const c = this.ctx!, t = c.currentTime + delay;
+    const car = c.createOscillator(), m1 = c.createOscillator(), m2 = c.createOscillator(), g1 = c.createGain(), g2 = c.createGain();
+    car.frequency.value = freq; m1.frequency.value = freq * 1.414; m2.frequency.value = freq * 2.76;
+    g1.gain.setValueAtTime(freq * 2.2, t); g1.gain.exponentialRampToValueAtTime(1, t + dur * 0.6);
+    g2.gain.setValueAtTime(freq * 0.9, t); g2.gain.exponentialRampToValueAtTime(1, t + dur * 0.35);
+    m1.connect(g1); g1.connect(car.frequency); m2.connect(g2); g2.connect(car.frequency);
+    const g = this.env(t, dur, vol * MIX.ui, 0.001); car.connect(g); g.connect(this.master!);
+    if (wet > 0 && this.revIn) { const w = c.createGain(); w.gain.value = wet; g.connect(w); w.connect(this.revIn); }
+    for (const o of [car, m1, m2]) { o.start(t); o.stop(t + dur + 0.03); }
+  }
+  /** chiado de walkie-talkie: ruído em faixa estreita + estalo ao soltar o botão */
+  private squelch(delay = 0, vol = 0.2, dur = 0.1) {
+    const c = this.ctx!, t = c.currentTime + delay, s = c.createBufferSource(); s.buffer = this.noiseBuf;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700 + rnd() * 500; bp.Q.value = 0.9;
+    const g = this.env(t, dur, vol * MIX.ui, 0.004); s.connect(bp); bp.connect(g); g.connect(this.master!); s.start(t, rnd() * 1.5, dur + 0.05);
+    this.burst(0.015, vol * 0.9 * MIX.ui, 2500, 8000, delay + dur * 0.85);
+  }
+  /** zumbido de servo/hidráulica subindo: serra filtrada com tremor de motor */
+  private servo(f0: number, f1: number, dur: number, vol: number, delay = 0) {
+    const c = this.ctx!, t = c.currentTime + delay, o = c.createOscillator(), f = c.createBiquadFilter(), g = this.env(t, dur, vol * MIX.ui, 0.05);
+    o.type = 'sawtooth'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    f.type = 'lowpass'; f.frequency.value = 700; f.Q.value = 2;
+    const l = c.createOscillator(), lg = c.createGain(); l.frequency.value = 26; lg.gain.value = vol * 0.4; l.connect(lg); lg.connect(g.gain);
+    o.connect(f); f.connect(g); g.connect(this.master!); o.start(t); l.start(t); o.stop(t + dur + 0.05); l.stop(t + dur + 0.05);
+  }
+
   // ---------- combate ----------
   shoot(kind: 'bullet' | 'rocket' | 'shell' | 'laser' | 'flame', o?: Spatial) {
     if (!this.ok('shoot' + kind, kind === 'bullet' ? 45 : 70)) return;
     switch (kind) {
-      case 'bullet': this.play(this.pick('bullet'), 1.1, o, 1, 0.25); break;
-      case 'shell': this.play(this.pick('shell'), 0.9, o, 1, 0.5); break;
-      case 'rocket': this.play(this.pick('rocket'), 0.7, o, 1, 0.4); break;
-      case 'laser': this.play(this.pick('laser'), 1.0, o, 1, 0.3); break;
-      case 'flame': this.play(this.pick('flame'), 0.6, o, 1, 0.1); break;
+      case 'bullet': this.play(this.pick('bullet'), 1.1 * MIX.war, o, 1, 0.25); break;
+      case 'shell': this.play(this.pick('shell'), 0.9 * MIX.war, o, 1, 0.5); break;
+      case 'rocket': this.play(this.pick('rocket'), 0.7 * MIX.war, o, 1, 0.4); break;
+      case 'laser': this.play(this.pick('laser'), 1.0 * MIX.war, o, 1, 0.3); break;
+      case 'flame': this.play(this.pick('flame'), 0.6 * MIX.war, o, 1, 0.1); break;
     }
   }
   boom(size: number, o?: Spatial) {
     if (!this.ok('boom', 45)) return;
     const s = size < 0.8 ? 0 : size < 1.4 ? 1 : size < 2.2 ? 2 : 3;
-    this.play(this.pick('boom' + s), [0.55, 0.75, 0.95, 1.1][s], o, 1, [0.3, 0.4, 0.5, 0.6][s]);
+    this.play(this.pick('boom' + s), [0.55, 0.75, 0.95, 1.1][s] * MIX.war, o, 1, [0.3, 0.4, 0.5, 0.6][s]);
     if (s >= 2 && this.ok('boomthump', 120)) this.play(this.pick('boom0'), 0.4, o, 0.5, 0.2);
   }
   /** estalo metálico de impacto */
-  hit(o?: Spatial) { if (this.ok('hit', 40)) this.play(this.pick('hit'), 1.0, o, 1, 0.15); }
+  hit(o?: Spatial) { if (this.ok('hit', 40)) this.play(this.pick('hit'), 1.0 * MIX.war, o, 1, 0.15); }
   /** soldado cai */
-  die(o?: Spatial) { if (this.ok('die', 140)) this.play(this.pick('die'), 0.9, o, 1, 0.15); }
+  die(o?: Spatial) { if (this.ok('die', 140)) this.play(this.pick('die'), 0.9 * MIX.war, o, 1, 0.15); }
   /** sequência de abates: metais subindo de tom com tambor */
   streak(n: number) {
-    if (!this.ok('streak', 300)) return;
+    if (!this.ok('streak', 300) || this.file('streak', 0.9)) return;
     const base = 196 * Math.pow(2, Math.min(n, 8) / 12 * 1.5);
     this.drum(0, 0.5); this.brass(base, 0.35, 0.2, 0.05); this.brass(base * 1.25, 0.35, 0.2, 0.13); this.brass(base * 1.5, 0.6, 0.24, 0.22);
     this.burst(0.5, 0.25, 800, 6000, 0.2, 0.4);
   }
   objective() {
-    if (!this.ok('obj', 400)) return;
+    if (!this.ok('obj', 400) || this.file('objective', 0.9)) return;
     this.drum(0, 0.45, 110); [392, 494, 587].forEach((f, i) => this.brass(f, 0.28, 0.2, 0.05 + i * 0.12)); this.brass(784, 0.7, 0.24, 0.42);
   }
   /** batida de abertura de missão: explosão enorme + tambor + metal grave */
-  slam() { if (this.ok('slam', 800)) { this.play(this.pick('boom3'), 0.85, undefined, 1, 0.6); this.drum(0.02, 0.7, 70); this.brass(98, 1.1, 0.22, 0.05, 0.7); } }
+  slam() { if (this.ok('slam', 800) && !this.file('slam', 1)) { this.play(this.pick('boom3'), 0.85, undefined, 1, 0.6); this.drum(0.02, 0.7, 70); this.brass(98, 1.1, 0.22, 0.05, 0.7); } }
 
-  // ---------- interface ----------
-  /** clique: toque mecânico com corpo (transiente + madeira/metal curto) */
-  click() { if (this.ok('click', 30)) { this.burst(0.012, 0.5, 2500, 9000); this.tone(240, 0.05, 'sine', 0.45, 150); this.tone(1500, 0.045, 'triangle', 0.16, 900, 0, 0.05); } }
-  /** seleção de unidade: chiado de rádio + bip */
-  select() { if (this.ok('select', 40)) { this.burst(0.03, 0.2, 1200, 5000); this.tone(700, 0.07, 'triangle', 0.34, 900, 0.015, 0.08); } }
-  /** ordem recebida: duplo bip de rádio ("afirmativo") */
-  order() { if (this.ok('order', 40)) { this.burst(0.025, 0.2, 1500, 5000); this.tone(520, 0.05, 'square', 0.16, undefined, 0.01, 0, 2400); this.tone(780, 0.07, 'square', 0.16, undefined, 0.07, 0.05, 2400); } }
-  error() { if (this.ok('error', 200)) { this.tone(150, 0.22, 'sawtooth', 0.3, 95, 0, 0, 900); this.tone(155, 0.22, 'square', 0.12, 98, 0.01, 0, 700); } }
+  // ---------- interface ---------- (nada de bips: transientes de ruído + metal batido + rádio)
+  /** clique: trava mecânica — estalo seco + pancada surda + metal curto */
+  click() { if (!this.ok('click', 30) || this.file('click', 0.8)) return; this.burst(0.012, 0.5 * MIX.ui, 2500, 9000); this.tone(210, 0.07, 'sine', 0.5 * MIX.ui, 110); this.clank(780, 0.07, 0.1); }
+  /** seleção de unidade: chiado de rádio + trava de fivela */
+  select() { if (!this.ok('select', 40) || this.file('select', 0.8)) return; this.squelch(0, 0.16, 0.07); this.tone(150, 0.08, 'sine', 0.35 * MIX.ui, 95, 0.02); this.clank(520, 0.12, 0.12, 0.03, 0.1); }
+  /** ordem recebida: rádio + duas travas ("afirmativo") */
+  order() { if (!this.ok('order', 40) || this.file('order', 0.8)) return; this.squelch(0, 0.18, 0.06); this.tone(130, 0.07, 'sine', 0.35 * MIX.ui, 90, 0.04); this.clank(430, 0.1, 0.14, 0.05); this.clank(330, 0.14, 0.14, 0.13, 0.1); }
+  /** negado: pancada grave + zumbido abafado */
+  error() { if (!this.ok('error', 200) || this.file('error', 0.8)) return; this.tone(120, 0.25, 'sine', 0.5 * MIX.ui, 70); this.tone(150, 0.26, 'sawtooth', 0.2 * MIX.ui, 95, 0, 0, 500); this.clank(180, 0.2, 0.2, 0.02); }
+  /** pronto: carimbo tático + sino de aço */
   ready() {
-    if (!this.ok('ready', 300)) return;
-    this.burst(0.02, 0.12, 1500, 6000); [659, 880, 1175].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.16, undefined, 0.03 + i * 0.09, 0.3));
+    if (!this.ok('ready', 300) || this.file('ready', 0.8)) return;
+    this.squelch(0, 0.1, 0.05); this.tone(130, 0.14, 'sine', 0.5 * MIX.ui, 80, 0.06); this.burst(0.05, 0.3 * MIX.ui, 300, 3000, 0.06); this.clank(1175, 0.35, 0.12, 0.07, 0.35); this.clank(1568, 0.4, 0.08, 0.17, 0.4);
   }
-  /** construção posicionada: pancada hidráulica + metal */
-  place() { if (this.ok('place', 120)) { this.play(this.pick('boom0'), 0.35, undefined, 0.7, 0.2); this.burst(0.15, 0.2, 400, 2500); this.tone(110, 0.2, 'sine', 0.3, 60); this.tone(880, 0.12, 'triangle', 0.1, 660, 0.12, 0.2); } }
-  /** venda: moedas */
-  sell() { if (this.ok('sell', 200)) { [1568, 2093, 2637].forEach((f, i) => this.tone(f, 0.1, 'triangle', 0.12, undefined, i * 0.06, 0.2)); } }
+  /** construção posicionada: pancada de concreto/aço sendo assentado + chiado hidráulico */
+  place() {
+    if (!this.ok('place', 120) || this.file('place', 0.8)) return;
+    this.play(this.pick('boom0'), 0.35 * MIX.ui, undefined, 0.7, 0.2); this.burst(0.2, 0.22 * MIX.ui, 200, 1500); this.tone(110, 0.2, 'sine', 0.3 * MIX.ui, 60); this.clank(260, 0.3, 0.18, 0.08, 0.25); this.burst(0.25, 0.08 * MIX.ui, 2500, 9000, 0.15);
+  }
+  /** venda: moedas de metal */
+  sell() { if (!this.ok('sell', 200) || this.file('sell', 0.8)) return; [2093, 2637, 3136].forEach((f, i) => this.clank(f, 0.16, 0.09, i * 0.06, 0.25)); this.tone(120, 0.1, 'sine', 0.25 * MIX.ui, 80); }
   /** sirene de ataque à base: dois ciclos de buzina militar */
   alert() {
-    if (!this.ok('alert', 5000)) return;
-    for (let i = 0; i < 3; i++) { this.tone(660, 0.3, 'sawtooth', 0.14, 940, i * 0.62, 0.3, 1800); this.tone(940, 0.3, 'sawtooth', 0.14, 660, i * 0.62 + 0.31, 0.3, 1800); }
+    if (!this.ok('alert', 5000) || this.file('alert', 0.9)) return;
+    for (let i = 0; i < 3; i++) { this.tone(660, 0.3, 'sawtooth', 0.16 * MIX.alarm, 940, i * 0.62, 0.5, 1100); this.tone(940, 0.3, 'sawtooth', 0.16 * MIX.alarm, 660, i * 0.62 + 0.31, 0.5, 1100); }
     this.drum(0, 0.4);
   }
-  lowPower() { if (this.ok('low', 5000)) { this.tone(440, 0.3, 'sawtooth', 0.13, 220, 0, 0.2, 1500); this.tone(330, 0.4, 'sawtooth', 0.13, 110, 0.32, 0.2, 1500); this.burst(0.5, 0.06, 300, 3000, 0.3); } }
+  lowPower() { if (this.ok('low', 5000) && !this.file('lowPower', 0.9)) { this.tone(440, 0.3, 'sawtooth', 0.13, 220, 0, 0.2, 1500); this.tone(330, 0.4, 'sawtooth', 0.13, 110, 0.32, 0.2, 1500); this.burst(0.5, 0.06, 300, 3000, 0.3); } }
   /** nova onda inimiga: corneta de guerra grave */
-  wave() { if (this.ok('wave', 3000)) { this.brass(98, 0.9, 0.24, 0, 0.7); this.brass(147, 1.0, 0.2, 0.55, 0.7); this.drum(0, 0.55, 80); this.drum(0.55, 0.5, 80); } }
-  rank() { if (this.ok('rank', 400)) { [784, 988, 1319].forEach((f, i) => this.tone(f, 0.2, 'triangle', 0.18, undefined, i * 0.09, 0.4)); this.burst(0.2, 0.08, 4000, 9000, 0.15, 0.3); } }
+  wave() { if (this.ok('wave', 3000) && !this.file('wave', 0.9)) { this.brass(98, 0.9, 0.24, 0, 0.7); this.brass(147, 1.0, 0.2, 0.55, 0.7); this.drum(0, 0.55, 80); this.drum(0.55, 0.5, 80); } }
+  rank() { if (this.ok('rank', 400) && !this.file('rank', 0.8)) { this.drum(0, 0.3, 110); [392, 494, 587].forEach((f, i) => this.brass(f, 0.3, 0.12, i * 0.1, 0.5)); this.burst(0.2, 0.08, 4000, 9000, 0.15, 0.3); } }
   /** evolução: zumbido de servo subindo + brilho */
-  upgrade() { if (this.ok('upg', 300)) { this.tone(150, 0.35, 'sawtooth', 0.1, 600, 0, 0.1, 1200); this.burst(0.3, 0.1, 1000, 4000); [784, 1175].forEach((f, i) => this.tone(f, 0.25, 'triangle', 0.16, undefined, 0.3 + i * 0.1, 0.4)); } }
+  upgrade() { if (this.ok('upg', 300) && !this.file('upgrade', 0.8)) { this.servo(110, 420, 0.4, 0.16); this.burst(0.3, 0.1 * MIX.ui, 1000, 4000); this.clank(600, 0.3, 0.14, 0.38, 0.3); this.brass(392, 0.5, 0.1, 0.4, 0.5); } }
   /** rádio antes do locutor */
   radio() {
     if (!this.ctx || this.muted) return;
-    this.tone(1400, 0.05, 'square', 0.05, undefined, 0, 0, 3000); this.tone(1900, 0.05, 'square', 0.05, undefined, 0.06, 0, 3000); this.burst(0.12, 0.07, 1500, 4500, 0.1);
+    if (this.file('radio', 0.8)) return;
+    this.squelch(0, 0.1, 0.06); this.squelch(0.12, 0.08, 0.05);
   }
   /** vitória: fanfarra de metais com tambores */
   win() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.file('win', 1)) return;
     this.drum(0, 0.6, 85);
     [[294, 0], [392, 0.18], [494, 0.36], [587, 0.54]].forEach(([f, d]) => { this.brass(f, 0.4, 0.2, d); this.brass(f / 2, 0.4, 0.14, d); });
     [587, 740, 880].forEach(f => this.brass(f, 1.8, 0.22, 0.8)); this.brass(147, 1.8, 0.2, 0.8); this.drum(0.8, 0.7, 70); this.burst(1.6, 0.18, 4000, 9000, 0.8, 0.5);
   }
   /** derrota: metais graves caindo + estrondo */
   lose() {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.muted || this.file('lose', 1)) return;
     [196, 185, 175, 147].forEach((f, i) => this.brass(f, 0.7, 0.2, i * 0.45, 0.8));
     this.drum(0, 0.6, 60); this.drum(0.9, 0.6, 55); this.play(this.pick('boom2'), 0.6, undefined, 0.8, 0.6);
   }
