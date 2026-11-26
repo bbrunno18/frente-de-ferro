@@ -17,7 +17,7 @@ import { tooltip } from '../ui/Tooltip';
 import { drawTerrain, drawTerrainBump, roadPoints } from '../ui/sprites';
 import { buildModel, dispose, mat, setGlbEnabled } from '../ui/models';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { sfx } from '../audio/Sfx';
+import { sfx, type Spatial } from '../audio/Sfx';
 import { Storage } from '../systems/Storage';
 import { music } from '../audio/Music';
 import { voice } from '../audio/Voice';
@@ -684,7 +684,7 @@ export class GameView {
     if (!this.placing) return;
     if (!this.placeValid()) { this.hud.toast('Local inválido: perto da base e em terreno livre', 1800); sfx.error(); return; }
     this.cmd({ c: 'place', k: this.placing, x: this.ghostT.x, y: this.ghostT.y });
-    sfx.click(); this.cancelPlacement();
+    sfx.place(); this.cancelPlacement();
   }
   private setGhost(wx: number, wy: number) {
     if (!this.placing) return;
@@ -935,11 +935,15 @@ export class GameView {
     const total = bs.reduce((s, b) => s + Math.floor(b.def.cost * 0.5 * (1 + 0.5 * (b.tech - 1))), 0);
     this.cmd({ c: 'sell', ids: bs.map(b => b.id) });
     this.selection = this.selection.filter(e => !bs.includes(e));
-    this.hud.toast(`Vendido: +${total} créditos`, 1800); sfx.ready();
+    this.hud.toast(`Vendido: +${total} créditos`, 1800); sfx.sell();
   }
   private upgradable(): Entity[] {
     const lab = this.world.hasBuilding(this.me, 'lab');
-    return this.selection.filter(e => e.alive && e.team === this.me && e.tech < MAX_TECH && (e.tech < 2 || lab));
+    const seen = new Set<string>(); // uma por tipo: a evolução vale para todos do mesmo tipo
+    return this.selection.filter(e => {
+      if (!e.alive || e.team !== this.me || e.tech >= MAX_TECH || (e.tech >= 2 && !lab)) return false;
+      const k = e.kind + e.tech; if (seen.has(k)) return false; seen.add(k); return true;
+    });
   }
   private upgradeSelected() {
     const list = this.upgradable();
@@ -948,6 +952,7 @@ export class GameView {
     for (const e of list) { const c = this.world.upgradeCost(e); if (budget >= c) { budget -= c; ids.push(e.id); } }
     if (!ids.length) { this.hud.toast('Créditos insuficientes', 1800); sfx.error(); return; }
     this.cmd({ c: 'up', ids }); sfx.upgrade(); this.runner?.note('upgrade');
+    this.hud.toast('Evolução aplicada a todos do mesmo tipo', 1800);
   }
   private selectArmy() {
     const army = this.world.units(this.me).filter(u => COMBAT.includes(u.kind));
@@ -962,6 +967,8 @@ export class GameView {
     const n = sel.length + (this.inspect && !sel.length ? 1 : 0);
     if (n !== this.deselN) { this.deselN = n; this.deselBtn.classList.toggle('hidden', n === 0); this.deselBtn.textContent = `✖ Desmarcar${sel.length > 1 ? ` (${sel.length})` : ''}`; }
     if (this.inspect && !this.inspect.alive) this.inspect = null;
+    { const mine = sel.filter(e => e.team === this.me), ck = mine.map(e => e.kind).join();
+      if (ck !== this.ctxKey) { this.ctxKey = ck; this.sidebar.setContext({ units: mine.filter(e => !e.building).length, buildings: mine.filter(e => e.building).length, producer: mine.some(e => e.kind === 'barracks' || e.kind === 'factory' || e.kind === 'helipad' || e.kind === 'conyard'), transport: mine.some(e => e.kind === 'apc') }); } }
     if (!sel.length && !this.inspect) { this.hud.setInfo(null); return; }
     if (this.inspect && !sel.length) {
       const e = this.inspect;
@@ -976,7 +983,7 @@ export class GameView {
       this.hud.setInfo({
         title: e.def.name, stars: e.tech, maxStars: MAX_TECH, rank: !e.building ? VET_NAMES[e.vet - 1] : '', hp: e.hp, maxHp: e.maxHp,
         sub: !e.building ? `${e.kills} abates` : '',
-        upLabel: max ? 'Nível máximo' : `⬆ Evoluir ★${e.tech + 1} · ◆${cost}`,
+        upLabel: max ? 'Nível máximo' : `⬆ Evoluir todos ★${e.tech + 1} · ◆${cost}`,
         canUp: !max && !needLab && cr >= cost, upNote: needLab ? 'Nível 3 exige Laboratório' : !e.building && !max && e.vet < 3 ? 'Mais abates = promoção automática' : '',
         canSell, enemy: false,
       });
@@ -984,7 +991,7 @@ export class GameView {
       const hp = sel.reduce((s, e) => s + e.hp, 0), mhp = sel.reduce((s, e) => s + e.maxHp, 0);
       this.hud.setInfo({
         title: `${sel.length} unidades`, stars: 0, maxStars: 0, rank: '', hp, maxHp: mhp, sub: '',
-        upLabel: ups.length ? `⬆ Evoluir ${ups.length} · ◆${total}` : 'Nada a evoluir', canUp: ups.length > 0 && cr >= Math.min(...ups.map(e => w.upgradeCost(e))),
+        upLabel: ups.length ? `⬆ Evoluir ${ups.length} ${ups.length > 1 ? 'tipos' : 'tipo'} · ◆${total}` : 'Nada a evoluir', canUp: ups.length > 0 && cr >= Math.min(...ups.map(e => w.upgradeCost(e))),
         upNote: '', canSell, enemy: false,
       });
     }
@@ -1281,6 +1288,7 @@ export class GameView {
   // ---------- entidades 3D ----------
   private syncEntities(dt: number) {
     const w = this.world, seen = new Set<number>();
+    this.engAcc = [0, 0, 0];
     for (const e of w.entities) {
       if (!e.alive) continue;
       seen.add(e.id);
@@ -1307,6 +1315,7 @@ export class GameView {
       // movimento: poeira, pernas, balanço e recuo
       const mv = Math.hypot(e.x - r.lx, e.y - r.ly) / Math.max(dt, 0.001);
       r.moving += ((mv > 14 ? 1 : 0) - r.moving) * Math.min(1, dt * 8);
+      if (!e.building && r.moving > 0.4 && e.team >= 0 && this.nearCam(e.x, e.y)) { if (e.def.category === 'vehicle') this.engAcc[0]++; else if (air) { if (e.kind === 'jet' || e.kind === 'bomber') this.engAcc[2]++; else this.engAcc[1]++; } }
       if (!e.building && !air && e.def.category === 'vehicle' && r.moving > 0.4) this.stampTrack(e, r);
       if (!e.building && !air) {
         r.phase += dt * Math.min(mv, 70) * 0.22;
@@ -1333,7 +1342,7 @@ export class GameView {
     }
     for (const [id, r] of this.ents) if (!seen.has(id)) {
       const d = r.e, dead = d && d.hp <= 0 && r.g.visible && d.def.armor !== 'air' && (d.building || d.def.category === 'vehicle') && d.kind !== 'wall';
-      if (d && d.hp <= 0 && r.g.visible && d.def.category === 'infantry') { this.makeBody(r.g); if (d.team === this.me) voice.say('lost'); }
+      if (d && d.hp <= 0 && r.g.visible && d.def.category === 'infantry') { this.makeBody(r.g); sfx.die(this.spat(d.x, d.y)); if (d.team === this.me) voice.say('lost'); }
       else if (dead) { this.makeHusk(r.g, d!.building); if (d!.team === this.me) voice.say(d!.building ? 'bldlost' : 'lost'); } else { this.scene.remove(r.g); dispose(r.g); }
       this.ents.delete(id);
     }
@@ -1363,6 +1372,13 @@ export class GameView {
       }
     }
   }
+  /** Panorama (esquerda/direita) e volume pela posição na tela: o som de longe é mais baixo. */
+  private spat(x: number, y: number): Spatial {
+    const dx = x - this.target.x, dist = Math.hypot(dx, y - this.target.z);
+    return { pan: Math.max(-1, Math.min(1, dx / (this.camDist * 1.1))), gain: Math.max(0.25, Math.min(1, 1.15 - dist / (this.camDist * 1.7))) };
+  }
+  private ctxKey = '\u0000';
+  private engT = 0; private engH = 0; private engJ = 0; private engAcc = [0, 0, 0];
   private nearCam(x: number, y: number) { return Math.hypot(x - this.target.x, y - this.target.z) < this.camDist * 1.6; }
 
   // ---------- cristais / névoa ----------
@@ -1418,9 +1434,9 @@ export class GameView {
       const near = this.nearCam(f.x, f.y);
       if (f.t === 'rank') { this.rankFx(f.x, f.y, f.v); if (near) sfx.rank(); continue; }
       if (!near) continue;
-      if (f.t === 'boom') { sfx.boom(f.s); this.explosion(f.x, f.y, f.s); this.combat = Math.min(1, this.combat + 0.18 + f.s * 0.08); }
-      else if (f.t === 'muzzle') { this.kickNear(f.x, f.y); sfx.shoot(f.k); this.muzzle(f.x, f.y, f.a, f.k); this.combat = Math.min(1, this.combat + 0.012); }
-      else { sfx.hit(); this.hitSparks(f.x, f.y); this.combat = Math.min(1, this.combat + 0.03); }
+      if (f.t === 'boom') { sfx.boom(f.s, this.spat(f.x, f.y)); this.explosion(f.x, f.y, f.s); this.combat = Math.min(1, this.combat + 0.18 + f.s * 0.08); }
+      else if (f.t === 'muzzle') { this.kickNear(f.x, f.y); sfx.shoot(f.k, this.spat(f.x, f.y)); this.muzzle(f.x, f.y, f.a, f.k); this.combat = Math.min(1, this.combat + 0.012); }
+      else { sfx.hit(this.spat(f.x, f.y)); this.hitSparks(f.x, f.y); this.combat = Math.min(1, this.combat + 0.03); }
     }
   }
 
@@ -1519,6 +1535,8 @@ export class GameView {
     for (const L of this.lights) { if (L.t > 0) { L.t -= dt; L.l.intensity *= Math.pow(0.0008, dt); if (L.t <= 0) L.l.intensity = 0; } }
     this.combat = Math.max(0, this.combat - dt * 0.14);
     music.setIntensity(this.paused || this.over ? 0 : this.combat);
+    this.engT = this.engAcc[0]; this.engH = this.engAcc[1]; this.engJ = this.engAcc[2];
+    if (this.paused || this.over) sfx.quiet(); else sfx.mix(this.engT, this.engH, this.engJ, this.combat);
     if (this.over) return;
     // sequência de abates
     const kills = w.teams[me].kills;

@@ -9,7 +9,7 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--txt); font-
 .hidden { display: none !important; }
 
 /* sidebar */
-#sidebar { --fac: #e8a824; --fac2: #35c6ff; width: 21%; min-width: 184px; max-width: 300px; background: linear-gradient(180deg, #172539 0%, #0c1522 100%); border-left: 1px solid #000; box-shadow: inset 2px 0 0 rgba(255,255,255,.05), -6px 0 18px rgba(0,0,0,.45); }
+#sidebar { --fac: #e8a824; --fac2: #35c6ff; width: 19%; min-width: 176px; max-width: 280px; background: linear-gradient(180deg, #172539 0%, #0c1522 100%); border-left: 1px solid #000; box-shadow: inset 2px 0 0 rgba(255,255,255,.05), -6px 0 18px rgba(0,0,0,.45); }
 .sb-top { display: flex; gap: 5px; align-items: center; }
 .emblem { width: 30px; height: 30px; flex: none; border-radius: 8px; background: linear-gradient(145deg, var(--fac), #000 140%); border: 1px solid rgba(255,255,255,.25); display: grid; place-items: center; box-shadow: 0 0 10px color-mix(in srgb, var(--fac) 55%, transparent); }
 .emblem span { width: 12px; height: 12px; background: var(--fac2); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
@@ -239,8 +239,8 @@ html[data-dev='tablet'] .actions button i { font-size: 11px; }
 /* retrato (celular e tablet): painel embaixo, jogo em cima */
 html[data-orient='portrait'] #app { flex-direction: column; }
 html[data-orient='portrait'] #game { flex: 1; min-height: 0; width: 100%; height: auto; }
-html[data-orient='portrait'] #sidebar { width: 100%; max-width: none; min-width: 0; height: clamp(250px, 40%, 460px); border-left: 0; border-top: 2px solid var(--line); box-shadow: 0 -6px 18px rgba(0,0,0,.45); }
-html[data-orient='portrait'] #app.playing #sidebar { display: grid; --acols: 9; grid-template-columns: minmax(124px, 34%) 1fr; grid-template-rows: auto 1fr auto auto; grid-template-areas: 'top tabs' 'radar lists' 'ptext lists' 'act act'; gap: 4px 6px; }
+html[data-orient='portrait'] #sidebar { width: 100%; max-width: none; min-width: 0; height: clamp(200px, 32%, 380px); border-left: 0; border-top: 2px solid var(--line); box-shadow: 0 -6px 18px rgba(0,0,0,.45); }
+html[data-orient='portrait'] #app.playing #sidebar { display: grid; --acols: 9; grid-template-columns: minmax(124px, 34%) 1fr; grid-template-rows: auto 1fr auto; grid-template-areas: 'top tabs' 'radar lists' 'ptext lists'; gap: 4px 6px; }
 html[data-orient='portrait'] #sidebar .sb-top { grid-area: top; }
 html[data-orient='portrait'] #sidebar .radar-row { grid-area: radar; height: auto; min-height: 0; }
 html[data-orient='portrait'] #sidebar .power-text { grid-area: ptext; }
@@ -250,7 +250,7 @@ html[data-orient='portrait'] #sidebar .actions { grid-area: act; }
 html[data-orient='portrait'] #sidebar .actions button i { display: none; }
 html[data-orient='portrait'] #sidebar .actions button { min-height: 42px; font-size: 17px; }
 html[data-orient='portrait'] .items { grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); }
-html[data-orient='portrait'][data-dev='tablet'] #sidebar { height: clamp(300px, 34%, 480px); }
+html[data-orient='portrait'][data-dev='tablet'] #sidebar { height: clamp(250px, 28%, 420px); }
 html[data-orient='portrait'][data-dev='tablet'] .actions button i { display: block; }
 html[data-orient='portrait'][data-dev='tablet'] #app.playing #sidebar { --acols: 9; }
 
@@ -478,3 +478,23 @@ html[data-orient='portrait'] .desel { padding: 9px 18px; font-size: 13px; }
 /* Tablets: menu maior para preencher a tela (iPad / Android tablet) */
 @media (pointer: coarse) and (orientation: landscape) and (min-width: 1100px) and (min-height: 900px) { .war-wrap { zoom: 1.12; width: min(1120px, 86vw); max-height: calc(var(--vh, 1vh) * 100 / 1.12); } }
 @media (pointer: coarse) and (orientation: portrait) and (min-width: 700px) { .war-wrap { zoom: 1.3; width: min(760px, 75vw); max-height: calc(var(--vh, 1vh) * 100 / 1.3); } .war-cols { grid-template-columns: 1fr; } }
+
+
+/* ===== Atalhos de comando sobre o mapa (antes ficavam numa grade de 11 botões na barra) ===== */
+#game > .actions.fab {
+  position: absolute; left: calc(env(safe-area-inset-left) + 8px); bottom: 10px; z-index: 5;
+  display: flex !important; flex-direction: column-reverse; flex-wrap: wrap-reverse; align-content: flex-start; gap: 6px;
+  max-height: calc(100% - 70px); pointer-events: none;
+}
+#game > .actions.fab button {
+  pointer-events: auto; flex: none; width: 44px; min-height: 44px; height: 44px; padding: 0; justify-content: center; border-radius: 50%;
+  font-size: 19px; color: #f1ede0; background: rgba(14,17,13,.62); border: 1px solid rgba(255,255,255,.22);
+  backdrop-filter: blur(3px); box-shadow: 0 2px 8px rgba(0,0,0,.5);
+}
+#game > .actions.fab button i { display: none !important; }
+#game > .actions.fab button.gone { display: none !important; }
+#game > .actions.fab button.on { background: rgba(46,154,95,.85); border-color: #7cfc9a; }
+#game > .actions.fab button.sp { width: 52px; height: 52px; font-size: 22px; border-color: rgba(255,200,60,.6); }
+#game > .actions.fab button.sp.off { opacity: .5; }
+html[data-dev='tablet'] #game > .actions.fab button { width: 52px; height: 52px; font-size: 22px; }
+html[data-dev='tablet'] #game > .actions.fab button.sp { width: 60px; height: 60px; }

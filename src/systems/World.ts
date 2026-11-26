@@ -100,6 +100,8 @@ export class World {
   entities: Entity[] = [];
   projectiles: Projectile[] = [];
   teams: TeamState[];
+  /** Nível de evolução por tipo: melhorar um equipamento melhora todos do mesmo tipo (e os futuros). */
+  kindTech: Partial<Record<Kind, number>>[] = [{}, {}];
   time = 0;
   fx: Fx[] = [];
   messages: TeamMsg[] = [];
@@ -226,7 +228,7 @@ export class World {
       if (x < 1 || y < 1 || x >= MAP_W - 1 || y >= MAP_H - 1) continue;
       if (!air && this.blocked(x, y)) continue;
       if (this.entities.some(u => !u.building && u.alive && Math.floor(u.x / TILE) === x && Math.floor(u.y / TILE) === y)) continue;
-      const u = new Entity(kind, team, (x + 0.5) * TILE, (y + 0.5) * TILE, this.teams[team].faction);
+      const u = this.born(new Entity(kind, team, (x + 0.5) * TILE, (y + 0.5) * TILE, this.teams[team].faction));
       this.entities.push(u);
       return u;
     }
@@ -235,7 +237,7 @@ export class World {
 
   addBuilding(team: Team, kind: Kind, tx: number, ty: number): Entity {
     const def = DEFS[kind];
-    const e = new Entity(kind, team, (tx + def.w / 2) * TILE, (ty + def.h / 2) * TILE, this.teams[team].faction);
+    const e = this.born(new Entity(kind, team, (tx + def.w / 2) * TILE, (ty + def.h / 2) * TILE, this.teams[team].faction));
     e.tx = tx; e.ty = ty;
     for (let y = ty; y < ty + def.h; y++) for (let x = tx; x < tx + def.w; x++) this.occ[this.idx(x, y)] = 1;
     this.entities.push(e);
@@ -259,7 +261,7 @@ export class World {
       }
     }
     if (!best) return null;
-    const u = new Entity(kind, team, (best.x + 0.5) * TILE, (best.y + 0.5) * TILE, this.teams[team].faction);
+    const u = this.born(new Entity(kind, team, (best.x + 0.5) * TILE, (best.y + 0.5) * TILE, this.teams[team].faction));
     this.entities.push(u);
     return u;
   }
@@ -300,6 +302,13 @@ export class World {
     }
   }
 
+  /** Entidade nova já nasce com a evolução do seu tipo. */
+  private born(e: Entity): Entity {
+    const t = this.kindTech[e.team][e.kind];
+    if (t && t > e.tech) { e.tech = t; e.recalc(false); }
+    return e;
+  }
+
   upgradeCost(e: Entity): number {
     const base = e.def.cost > 0 ? e.def.cost : 1000;
     return Math.round(base * 0.6 * e.tech);
@@ -317,10 +326,15 @@ export class World {
     const err = this.upgradeError(team, e);
     if (err) return { ok: false, msg: err };
     this.teams[team].credits -= this.upgradeCost(e);
-    e.tech++;
-    e.recalc(true);
-    e.hp = Math.min(e.maxHp, e.hp + e.maxHp * 0.2);
-    this.fx.push({ t: 'rank', x: e.x, y: e.y, v: e.tech });
+    const nt = e.tech + 1;
+    this.kindTech[team][e.kind] = nt;
+    let first = true;
+    for (const u of this.entities) {
+      if (!u.alive || u.team !== team || u.kind !== e.kind || u.tech >= nt) continue;
+      u.tech = nt; u.recalc(true);
+      u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.2);
+      if (first || u === e) { this.fx.push({ t: 'rank', x: u.x, y: u.y, v: u.tech }); first = false; }
+    }
     if (e.building) this.updatePower();
     return { ok: true };
   }

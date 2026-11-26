@@ -65,6 +65,7 @@ export class Sidebar {
   private tabBtns = new Map<TabId, HTMLButtonElement>();
   private lists = new Map<TabId, HTMLElement>();
   private shownCr = 0;
+  private fab!: HTMLElement;
   minimap: Minimap;
 
   constructor(private root: HTMLElement, private world: World, private me: Team, private h: SidebarHandlers) {
@@ -88,7 +89,6 @@ export class Sidebar {
       <div class="actions">
         <button id="sb-box" title="Caixa de seleção">▭<i>Caixa</i></button>
         <button id="sb-all" title="Selecionar todo o exército">⚔<i>Exército</i></button>
-        <button id="sb-clear" title="Limpar seleção">✖<i>Limpar</i></button>
         <button id="sb-amove" title="Atacar-mover: toque no destino">⚑<i>Atacar</i></button>
         <button id="sb-stop" title="Parar">■<i>Parar</i></button>
         <button id="sb-sell" title="Vender construção selecionada (50%)">$<i>Vender</i></button>
@@ -108,7 +108,6 @@ export class Sidebar {
     const box = root.querySelector('#sb-box') as HTMLButtonElement;
     box.addEventListener('click', () => { box.classList.toggle('on', h.onToggleBox()); });
     root.querySelector('#sb-all')!.addEventListener('click', () => h.onSelectAll());
-    root.querySelector('#sb-clear')!.addEventListener('click', () => h.onClear());
     const am = root.querySelector('#sb-amove') as HTMLButtonElement;
     am.addEventListener('click', () => { am.classList.toggle('on', h.onAMove()); });
     root.querySelector('#sb-stop')!.addEventListener('click', () => h.onStop());
@@ -123,6 +122,10 @@ export class Sidebar {
     const spb = root.querySelector('#sb-sp') as HTMLButtonElement;
     spb.addEventListener('click', () => { spb.classList.toggle('on', h.onSuper()); });
 
+    // Atalhos de comando: saem da barra e viram botões pequenos sobre o mapa, que só aparecem quando fazem sentido
+    this.fab = root.querySelector('.actions') as HTMLElement;
+    this.fab.classList.add('fab');
+    (document.getElementById('game') ?? document.body).append(this.fab);
     const tabsEl = root.querySelector('.tabs')!, listsEl = root.querySelector('.lists')!;
     for (const t of TABS) {
       const b = document.createElement('button');
@@ -170,8 +173,15 @@ export class Sidebar {
     for (const it of this.items) it.el.classList.toggle('hl', it.kind === kind);
     TABS.forEach(t => this.tabBtns.get(t.id)?.classList.toggle('hl', !!kind && t.kinds.includes(kind)));
   }
-  setMode(rally: boolean, sp: boolean, patrol = false) { this.root.querySelector('#sb-rally')?.classList.toggle('on', rally); this.root.querySelector('#sb-sp')?.classList.toggle('on', sp); this.root.querySelector('#sb-patrol')?.classList.toggle('on', patrol); }
-  setAMove(on: boolean) { this.root.querySelector('#sb-amove')?.classList.toggle('on', on); }
+  setMode(rally: boolean, sp: boolean, patrol = false) { this.fab.querySelector('#sb-rally')?.classList.toggle('on', rally); this.fab.querySelector('#sb-sp')?.classList.toggle('on', sp); this.fab.querySelector('#sb-patrol')?.classList.toggle('on', patrol); }
+  setAMove(on: boolean) { this.fab.querySelector('#sb-amove')?.classList.toggle('on', on); }
+
+  /** Mostra só os atalhos úteis para o que está selecionado. */
+  setContext(c: { units: number; buildings: number; producer: boolean; transport: boolean }) {
+    const show = (id: string, on: boolean) => this.fab.querySelector('#sb-' + id)?.classList.toggle('gone', !on);
+    show('all', c.units === 0); show('amove', c.units > 0); show('stop', c.units > 0); show('patrol', c.units > 0); show('hold', c.units > 0);
+    show('sell', c.buildings > 0); show('rep', c.buildings > 0); show('rally', c.producer); show('unload', c.transport);
+  }
 
   update(cam: { x: number; y: number; w: number; h: number }) {
     const w = this.world, t = w.teams[this.me];
@@ -183,7 +193,7 @@ export class Sidebar {
     this.powerFill.classList.toggle('low', t.low);
     this.powerText.textContent = t.low ? `⚡ ${t.power}/${t.usage} — BAIXA` : `⚡ ${t.power} / ${t.usage}`;
     this.powerText.classList.toggle('low', t.low);
-    const spb = this.root.querySelector('#sb-sp') as HTMLElement | null;
+    const spb = this.fab.querySelector('#sb-sp') as HTMLElement | null;
     if (spb) {
       const hasRadar = w.hasBuilding(this.me, 'radar'), i = spb.querySelector('i')!;
       const txt = !hasRadar ? 'Radar' : t.sp > 0 ? `${Math.ceil(t.sp)}s` : 'PRONTO';
@@ -212,5 +222,5 @@ export class Sidebar {
     this.minimap.draw(cam);
   }
 
-  destroy() { tooltip.hide(); this.root.innerHTML = ''; }
+  destroy() { tooltip.hide(); this.fab?.remove(); this.root.innerHTML = ''; }
 }
